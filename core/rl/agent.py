@@ -1,0 +1,518 @@
+import numpy as np
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, Tuple, List, Optional
+import pickle
+import logging
+import json
+import pandas as pd
+from core.metrics.nmatrix_hyperopt import calculate_nmatrix, save_optimization_result
+
+# ANSI color codes for colorful terminal output
+GREEN = '\033[92m'
+RED = '\033[91m'
+YELLOW = '\033[93m'
+CYAN = '\033[96m'
+MAGENTA = '\033[95m'
+BLUE = '\033[94m'
+BOLD = '\033[1m'
+END = '\033[0m'
+
+@dataclass
+class BidsAgent:
+    ACTIONS = ('go_long', 'go_short', 'do_nothing')  # Immutable action set
+    
+    def __init__(self, model_dir: Optional[str] = None):
+        # Learning parameters
+        config_path = Path(__file__).resolve().parents[1] / "config" / "agent_config.json"
+        with open(config_path) as f:
+            d = json.load(f)
+        self.learning_rate = d.get('learning_rate')
+        self.discount_factor = d.get('discount_factor')
+        self.epsilon = d.get('epsilon_start')
+        self.min_epsilon = d.get('min_epsilon')
+        self.decay_rate = d.get('decay_rate')
+
+        # Model persistence setup
+        self.model_dir = Path(model_dir) if model_dir else Path(__file__).resolve().parent
+        self.model_dir.mkdir(exist_ok=True)
+        
+        # Q-table and state management
+        self._init_model_structures()
+        self.load_model()
+
+    def _init_model_structures(self):
+        """Initialize core data structures with proper typing"""
+        self.q_table = np.zeros((1024, len(self.ACTIONS)))  # Power-of-2 initial size
+        self.state_to_index: Dict[Tuple, int] = {}
+        self.episode_transitions = []
+
+    def decay_epsilon(self):
+        """Proper epsilon decay mechanism"""
+        self.epsilon = max(self.min_epsilon, self.epsilon * self.decay_rate)
+
+    def load_model(self):
+        """Load model components safely"""
+        try:
+            pkls_dir = self.model_dir/'pkls'
+            # Load npy Q-table
+            #if (self.model_dir/'q_table.npy').exists():
+            #    self.q_table = np.load(self.model_dir/'q_table.npy')
+
+            # Load npy Q-table
+            if (pkls_dir/'q_table.pkl').exists():
+                with open(pkls_dir/'q_table.pkl', 'rb') as f:
+                    self.q_table = pickle.load(f)
+
+            # Try to load state mappings from pkls directory first
+            state_path_pkls = pkls_dir/'state_to_index.pkl'
+            state_path_root = self.model_dir/'state_to_index.pkl'
+            
+            # First try pkls directory, then fall back to root directory
+            if state_path_pkls.exists():
+                with open(state_path_pkls, 'rb') as f:
+                    self.state_to_index = pickle.load(f)
+                    logging.info("Loaded state mappings from pkls directory")
+            elif state_path_root.exists():
+                with open(state_path_root, 'rb') as f:
+                    self.state_to_index = pickle.load(f, allow_pickle=True)
+                    logging.info("Loaded state mappings from root directory")
+            
+            logging.info(f"{GREEN}Loaded model with {len(self.state_to_index)} known states{END}")
+            
+        except Exception as e:
+            logging.warning(f"{YELLOW}Model loading failed: {e} - Initializing new model{END}")
+            self._initialize_new_model()
+
+    def _initialize_new_model(self):
+        """Bootstrap initial model state"""
+        try:
+            # Seed with basic market states
+            base_states = [
+                ('trend_up', 1.0, 0),
+                ('trend_down', -1.0, 1),
+                ('neutral', 0.0, 0)
+            ]
+            
+            for state in base_states:
+                self._register_state(state)
+            
+            # Initialize with small positive values to encourage exploration
+            self.q_table = np.random.uniform(0, 0.1, self.q_table.shape)
+            self.save_model()
+            
+            print(f"{GREEN}✓ Initialized new model with {len(self.state_to_index)} base states{END}")
+            
+        except Exception as e:
+            logging.error(f"{RED}Model initialization failed: {e}{END}")
+            raise RuntimeError("Could not initialize new model") from e
+
+    def _register_state(self, state: Tuple) -> int:
+        """Safely register new states with Q-table expansion"""
+        if state not in self.state_to_index:
+            new_index = len(self.state_to_index)
+            
+            # Expand Q-table geometrically when needed
+            if new_index >= self.q_table.shape[0]:
+                new_size = self.q_table.shape[0] * 2
+                self.q_table = np.resize(self.q_table, (new_size, len(self.ACTIONS)))
+                logging.info(f"{CYAN}Expanded Q-table to {new_size} states{END}")
+            
+            self.state_to_index[state] = new_index
+        return self.state_to_index[state]
+
+    def save_model(self):
+        """Persist model state safely"""
+        try:
+            # Save Q-table
+            with open(self.model_dir/'pkls/q_table.pkl', 'wb') as f:
+                pickle.dump(self.q_table, f)
+            # Create pkls directory if it doesn't exist
+            pkls_dir = self.model_dir/'pkls'
+            pkls_dir.mkdir(exist_ok=True)
+            
+            # Save state mappings to pkls directory
+            with open(pkls_dir/'state_to_index.pkl', 'wb') as f:
+                pickle.dump(self.state_to_index, f)
+            # Save state episode transitions to pkls directory
+            with open(pkls_dir/'episode_transitions.pkl', 'wb') as f:
+                pickle.dump(self.episode_transitions, f)
+            # Also save a backup in the model directory for backward compatibility
+            with open(self.model_dir/'state_to_index.pkl', 'wb') as f:
+                pickle.dump(self.state_to_index, f)
+            
+            logging.info(f"{GREEN}Saved model with {len(self.state_to_index)} states{END}")
+            
+        except Exception as e:
+            logging.error(f"{RED}Model save failed: {e}{END}")
+            raise RuntimeError("Model persistence failed") from e
+
+    def get_state_index(self, state: Tuple) -> int:
+        """Get index for state using tuple directly as key"""
+        if state not in self.state_to_index:
+            # Expand Q-table geometrically to avoid frequent resizing
+            new_size = max(len(self.state_to_index) * 2, 1)
+            if new_size > self.q_table.shape[0]:
+                self.q_table = np.resize(self.q_table, (new_size, len(self.ACTIONS)))
+                
+            self.state_to_index[state] = len(self.state_to_index)
+            
+        return self.state_to_index[state]
+        
+    def expand_q_table(self):
+        """Double the size of Q-table when needed"""
+        new_size = len(self.q_table) * 2
+        new_q_table = np.zeros((new_size, 3))
+        new_q_table[:len(self.q_table)] = self.q_table
+        self.q_table = new_q_table
+        logging.info(f"{CYAN}Q-table expanded to size {new_size}{END}")
+        
+    def select_action(self, state: Tuple, epsilon: float = None) -> str:
+        """Epsilon-greedy action selection with optional epsilon override"""
+        # Use provided epsilon if given, otherwise use the agent's epsilon
+        use_epsilon = epsilon if epsilon is not None else self.epsilon
+        
+        if np.random.random() < use_epsilon:
+            return np.random.choice(self.ACTIONS)
+        
+        state_idx = self._register_state(state)
+        return self.ACTIONS[np.argmax(self.q_table[state_idx])]
+        
+    def strategic_action_selection(self, base_state: Tuple) -> Tuple[str, int]:
+        """Compare long/short scenarios using state augmentation"""
+        long_state = base_state + (0,)
+        short_state = base_state + (1,)
+        
+        long_q = self.q_table[self._register_state(long_state)]
+        short_q = self.q_table[self._register_state(short_state)]
+        
+        if np.max(long_q) > np.max(short_q):
+            return self.select_action(long_state), 0
+        return self.select_action(short_state), 1
+        
+    def update(self, state: Tuple, action: str, reward: float, next_state: Tuple):
+        """Q-learning update with bounds checking"""
+        try:
+            action_idx = self.ACTIONS.index(action)
+            state_idx = self._register_state(state)
+            next_idx = self._register_state(next_state)
+            
+            current_q = self.q_table[state_idx, action_idx]
+            max_future_q = np.max(self.q_table[next_idx])
+            
+            # Q-learning formula
+            new_q = current_q + self.learning_rate * (
+                reward + self.discount_factor * max_future_q - current_q
+            )
+            
+            self.q_table[state_idx, action_idx] = new_q
+            
+        except ValueError as e:
+            logging.error(f"{RED}Invalid action '{action}' in update: {e}{END}")
+        except Exception as e:
+            logging.error(f"{RED}Update failed for state {state}: {e}{END}")
+
+    def save_model_with_alpha(self, alpha_dir: Optional[Path] = None):
+        """Enhanced model saving with proper type handling"""
+        try:
+            alpha_dir = alpha_dir or Path("optimized_models")
+            alpha_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Save with versioning
+            version = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
+            model_dir = alpha_dir / f"model_{version}"
+            model_dir.mkdir()
+            
+            # Create pkls directory in the model directory
+            pkls_dir = model_dir / 'pkls'
+            pkls_dir.mkdir(exist_ok=True)
+            
+            # Save components
+            np.save(model_dir/'q_table.npy', self.q_table)
+            
+            # Save state mappings to pkls directory
+            with open(pkls_dir/'state_to_index.pkl', 'wb') as f:
+                pickle.dump(self.state_to_index, f)
+            
+            # Also save in the model directory for backward compatibility
+            with open(model_dir/'state_to_index.pkl', 'wb') as f:
+                pickle.dump(self.state_to_index, f)
+                
+            # Save metadata with native types
+            metadata = {
+                "q_table_shape": [int(dim) for dim in self.q_table.shape],
+                "num_states": int(len(self.state_to_index)),
+                "learning_rate": float(self.learning_rate),
+                "discount_factor": float(self.discount_factor),
+                "epsilon": float(self.epsilon),
+                "num_transitions": int(len(self.episode_transitions))
+            }
+            
+            with open(model_dir/'metadata.json', 'w') as f:
+                json.dump(metadata, f, indent=2)
+                
+            logging.info(f"{GREEN}Saved alpha model to {model_dir}{END}")
+            
+        except Exception as e:
+            logging.error(f"{RED}Alpha save failed: {e}{END}")
+            raise
+            
+    def save_model_with_metrics(self, alpha_dir=None):
+        """Save model when metrics condition is met"""
+        try:
+            # Save to regular location
+            self.save_model()
+            
+            # If alpha_dir is provided, also save there
+            if alpha_dir:
+                # Handle if alpha_dir is a tuple (dir_path, json_path)
+                if isinstance(alpha_dir, tuple) and len(alpha_dir) >= 1:
+                    alpha_dir = alpha_dir[0]  # Use the directory path from the tuple
+                
+                # Create alpha directory if it doesn't exist
+                alpha_path = Path(alpha_dir)
+                pkls_dir = alpha_path / 'pkls'
+                pkls_dir.mkdir(parents=True, exist_ok=True)
+                
+                # Save to alpha directory's pkls subdirectory
+                with open(pkls_dir/'q_table.pkl', 'wb') as f:
+                    pickle.dump(self.q_table, f)
+                
+                with open(pkls_dir/'state_to_index.pkl', 'wb') as f:
+                    pickle.dump(self.state_to_index, f)
+                
+                with open(pkls_dir/'episode_transitions.pkl', 'wb') as f:
+                    pickle.dump(self.episode_transitions, f)
+                
+                # Copy optimization_results.json from alpha_dir to model's pkls directory if it exists
+                source_json_path = alpha_path / 'optimization_results.json'
+                if source_json_path.exists():
+                    # Create model's pkls directory if it doesn't exist
+                    model_pkls_dir = self.model_dir / 'pkls'
+                    model_pkls_dir.mkdir(exist_ok=True)
+                    
+                    # Copy the JSON file to model's pkls directory
+                    target_json_path = model_pkls_dir / 'optimization_results.json'
+                    try:
+                        import shutil
+                        shutil.copy2(source_json_path, target_json_path)
+                        logging.info(f"{CYAN}Copied metrics JSON to model's pkls directory: {target_json_path}{END}")
+                    except Exception as json_copy_error:
+                        logging.error(f"{RED}Failed to copy metrics JSON: {json_copy_error}{END}")
+                
+                logging.info(f"{GREEN}Saved model to alpha directory: {alpha_dir}{END}")
+        
+        except Exception as e:
+            logging.error(f"{RED}Alpha model save failed: {e}{END}")
+
+    def add_transition(self, state: Tuple, action: str, reward: float, next_state: Tuple):
+        """Store a new transition"""
+        transition = {
+            'state': state,
+            'action': action,
+            'reward': reward,
+            'next_state': next_state,
+            'timestamp': pd.Timestamp.now().isoformat()
+        }
+        self.episode_transitions.append(transition)
+        
+        # Automatically limit the number of stored transitions to prevent memory issues
+        self._limit_transitions()
+        
+    def _limit_transitions(self, max_transitions: int = 10000):
+        """Limit the number of stored transitions to prevent memory issues"""
+        if len(self.episode_transitions) > max_transitions:
+            # Keep only the most recent transitions
+            self.episode_transitions = self.episode_transitions[-max_transitions:]
+            logging.info(f"{YELLOW}Limited transitions to {max_transitions} most recent entries{END}")
+            
+    def clear_transitions(self):
+        """Clear all stored transitions"""
+        transitions_count = len(self.episode_transitions)
+        self.episode_transitions = []
+        logging.info(f"{CYAN}Cleared {transitions_count} stored transitions{END}")
+
+    def find_optimal_model(self, 
+                          include_candidates: bool = True, 
+                          print_progress: bool = True,
+                          alpha_weight: float = 0.3,
+                          entropy_weight: float = 0.4,
+                          burke_weight: float = 0.3) -> Optional[Path]:
+        """
+        Locate best-performing model based on multiple criteria:
+        - Lower alpha is better
+        - Lower entropy is better
+        - Higher burke is better
+        
+        Parameters:
+        -----------
+        include_candidates: bool
+            Whether to include candidate models in the search
+        print_progress: bool
+            Whether to print progress during the search
+        alpha_weight: float
+            Weight for alpha in the composite score (0-1)
+        entropy_weight: float
+            Weight for entropy in the composite score (0-1)
+        burke_weight: float
+            Weight for burke in the composite score (0-1)
+            
+        Returns:
+        --------
+        Optional[Path]: Path to the best model directory, or None if no models found
+        """
+        try:
+            # Search in both optimized_results and optimization_results directories
+            metrics_dirs = [
+                Path('user_data/optimized_results'),
+                Path('user_data/optimization_results')
+            ]
+            
+            # Add candidate directories if requested
+            if include_candidates:
+                # Find all candidate directories
+                candidate_pattern = Path('user_data/optimization_results').glob('candidate_*')
+                intermediate_pattern = Path('user_data/optimization_results').glob('intermediate_*')
+                metrics_dirs.extend(candidate_pattern)
+                metrics_dirs.extend(intermediate_pattern)
+            
+            best_model = None
+            best_score = float('inf')  # Lower score is better
+            
+            # Track all models for reporting
+            all_models = []
+            
+            if print_progress:
+                print(f"\n{BLUE}{'═' * 60}{END}")
+                print(f"{BOLD}{CYAN}🔍 Searching for optimal model...{END}")
+                print(f"{BLUE}{'═' * 60}{END}")
+                print(f"{BOLD}Alpha weight:{END} {YELLOW}{alpha_weight:.2f}{END}")
+                print(f"{BOLD}Entropy weight:{END} {YELLOW}{entropy_weight:.2f}{END}")
+                print(f"{BOLD}Burke weight:{END} {YELLOW}{burke_weight:.2f}{END}")
+                print(f"{BOLD}Including candidates:{END} {YELLOW}{include_candidates}{END}")
+                print(f"{BLUE}{'─' * 60}{END}")
+            
+            # Process each metrics directory
+            for metrics_dir in metrics_dirs:
+                if not metrics_dir.exists():
+                    if print_progress:
+                        print(f"{YELLOW}Directory not found: {metrics_dir}{END}")
+                    continue
+                    
+                # Process all subdirectories in this metrics directory
+                for result_dir in metrics_dir.glob('*'):
+                    metrics_file = result_dir / 'optimization_results.json'
+                    
+                    if not metrics_file.exists():
+                        continue
+                        
+                    try:
+                        with open(metrics_file) as f:
+                            metrics_data = json.load(f)
+                            
+                            # Extract values with fallbacks
+                            current_alpha = metrics_data.get('alpha', float('inf'))  # Lower is better
+                            
+                            # Handle different metrics structures
+                            metrics = metrics_data.get('metrics', {})
+                            if not metrics:
+                                continue
+                                
+                            # Get burke value - could be a single value or a list
+                            burke_value = metrics.get('burke', -float('inf'))
+                            if isinstance(burke_value, list):
+                                burke_max = max(burke_value) if burke_value else -float('inf')
+                            else:
+                                burke_max = burke_value
+                                
+                            current_entropy = metrics.get('entropy', float('inf'))  # Lower is better
+                            
+                            # Calculate composite score
+                            current_score = (
+                                (current_alpha * alpha_weight) +  # Lower alpha is better
+                                (current_entropy * entropy_weight) -  # Lower entropy is better
+                                (burke_max * burke_weight)  # Higher burke is better (subtract to minimize score)
+                            )
+                            
+                            # Store model info for reporting
+                            model_info = {
+                                'dir': result_dir,
+                                'alpha': current_alpha,
+                                'burke': burke_max,
+                                'entropy': current_entropy,
+                                'score': current_score,
+                                'timestamp': metrics_data.get('timestamp', 'unknown')
+                            }
+                            all_models.append(model_info)
+
+                            # Update best model if this one is better
+                            if current_score < best_score:
+                                best_score = current_score
+                                best_model = result_dir
+                                
+                                # Store values for logging
+                                best_values = {
+                                    'alpha': current_alpha,
+                                    'burke_max': burke_max,
+                                    'entropy': current_entropy,
+                                    'score': current_score
+                                }
+                                
+                                if print_progress:
+                                    alpha_color = GREEN if current_alpha < 0 else RED
+                                    burke_color = GREEN if burke_max > 0.5 else (YELLOW if burke_max > 0 else RED)
+                                    entropy_color = GREEN if current_entropy < 0.3 else (YELLOW if current_entropy < 0.7 else RED)
+                                    
+                                    print(f"\n{GREEN}✨ New best model:{END} {CYAN}{result_dir.name}{END}")
+                                    print(f"  {BOLD}Score:{END} {GREEN}{current_score:.6f}{END}")
+                                    print(f"  {BOLD}Alpha:{END} {alpha_color}{current_alpha:.6f}{END}")
+                                    print(f"  {BOLD}Burke:{END} {burke_color}{burke_max:.6f}{END}")
+                                    print(f"  {BOLD}Entropy:{END} {entropy_color}{current_entropy:.6f}{END}")
+                    except Exception as e:
+                        logging.warning(f"{YELLOW}Error processing {metrics_file}: {e}{END}")
+                        continue
+            
+            # Sort and print top models with colors
+            if print_progress and all_models:
+                # Sort by score (lower is better)
+                sorted_models = sorted(all_models, key=lambda x: x['score'])
+                
+                print(f"\n{BLUE}{'═' * 60}{END}")
+                print(f"{BOLD}{CYAN}🏆 Top 5 Models (out of {len(all_models)} total):{END}")
+                print(f"{BLUE}{'═' * 60}{END}")
+                
+                for i, model in enumerate(sorted_models[:5]):
+                    # Determine colors based on values
+                    alpha_color = GREEN if model['alpha'] < 0 else RED
+                    burke_color = GREEN if model['burke'] > 0.5 else (YELLOW if model['burke'] > 0 else RED)
+                    entropy_color = GREEN if model['entropy'] < 0.3 else (YELLOW if model['entropy'] < 0.7 else RED)
+                    score_color = GREEN if model['score'] < 0 else (YELLOW if model['score'] < 0.5 else RED)
+                    
+                    # Add medal emoji for top 3
+                    medal = "🥇" if i == 0 else ("🥈" if i == 1 else ("🥉" if i == 2 else ""))
+                    
+                    print(f"{BOLD}{CYAN}{i+1}. {medal} {model['dir'].name}{END}")
+                    print(f"   {BOLD}Score:{END} {score_color}{model['score']:.6f}{END}")
+                    print(f"   {BOLD}Alpha:{END} {alpha_color}{model['alpha']:.6f}{END}")
+                    print(f"   {BOLD}Burke:{END} {burke_color}{model['burke']:.6f}{END}")
+                    print(f"   {BOLD}Entropy:{END} {entropy_color}{model['entropy']:.6f}{END}")
+                    print(f"   {BOLD}Timestamp:{END} {MAGENTA}{model['timestamp']}{END}")
+                    print(f"{BLUE}{'─' * 60}{END}")
+
+            if best_model:
+                logging.info(
+                    f"{GREEN}Optimal model: {best_model}\n"
+                    f"Alpha: {best_values['alpha']:.6f} | "
+                    f"Burke Max: {best_values['burke_max']:.6f} | "
+                    f"Entropy: {best_values['entropy']:.6f} | "
+                    f"Score: {best_values['score']:.6f}{END}"
+                )
+                return best_model
+                
+            if print_progress:
+                print(f"{RED}No suitable models found.{END}")
+            return None
+            
+        except Exception as e:
+            logging.error(f"{RED}Model search failed: {e}{END}")
+            return None
