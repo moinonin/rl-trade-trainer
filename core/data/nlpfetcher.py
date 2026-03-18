@@ -30,7 +30,7 @@ def get_pairs(exchange):
         logging.error(f"Error getting pairs: {e}")
         return []
 
-def compute_nlp_action(pair, exchange_name, timeframe='15m', limit=30):
+def compute_nlp_action(pair, exchange_name, timeframe='1m', limit=30):
     """Compute NLP action for a given pair"""
     try:
         fetcher = Fetcher(pair, exchange_name, timeframe, limit)
@@ -39,7 +39,7 @@ def compute_nlp_action(pair, exchange_name, timeframe='15m', limit=30):
         logging.error(f"Error computing NLP action: {e}")
         return {'error': str(e)}
 
-def console_stream(pair, exchange_name, timeframe='15m', limit=30):
+def console_stream(pair, exchange_name, timeframe='1m', limit=30):
     fetcher = Fetcher(pair, exchange_name, timeframe, limit)
     exchange = fetcher.client
     pairs = get_pairs(exchange)
@@ -54,7 +54,7 @@ def console_stream(pair, exchange_name, timeframe='15m', limit=30):
 
 
 # Uncomment to run the console stream
-# console_stream('btc/usdt', 'bybit', '15m', 30)
+# console_stream('btc/usdt', 'bybit', '1m', 30)
 print(compute_nlp_action('btc/usdt', 'binance'))
 # Example usage
 ''''

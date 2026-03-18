@@ -32,7 +32,7 @@ logging.basicConfig(
 )
 
 class Fetcher:
-    def __init__(self,pair: str, exchange_name: Optional[str] = 'binance', interval: str = '1s',limit: int = 30):
+    def __init__(self,pair: str, exchange_name: Optional[str] = 'binance', interval: str = '1m',limit: int = 30):
         self.pair = pair
         self.exchange_name = exchange_name
         self.interval = interval
@@ -305,7 +305,7 @@ def main(pair,exchange_name,method: str, *args,**kwargs):
 
 
 
-#print(Fetcher('ADA/USDT:USDT', 'bybit', '15m', limit=30).compute_nlp_action())
+#print(Fetcher('ADA/USDT:USDT', 'bybit', '1m', limit=30).compute_nlp_action())
 
 '''
 if __name__ == '__main__':

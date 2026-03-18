@@ -350,7 +350,7 @@ class BidAgentTrainer:
     def continuous_training(self,
                           pair: str,
                           exchange_name: str,
-                          interval: str = '15m',
+                          interval: str = '1m',
                           training_window: int = 100,
                           update_interval: int = 20,
                           max_iterations: Optional[int] = None):
@@ -863,7 +863,7 @@ class BidAgentTrainer:
                         historical_df: pd.DataFrame,
                         pair: str,
                         exchange_name: str,
-                        interval: str = '15m',
+                        interval: str = '1m',
                         training_window: int = 100,
                         historical_interval: int = 0,  # For historical data
                         live_interval: int = 20,      # For live data
@@ -978,7 +978,7 @@ def main():
         trainer.continuous_training(
             pair="BTC/USDT:USDT",
             exchange_name="binance",
-            interval="15m",
+            interval="1m",
             training_window=100,
             update_interval=20,
             max_iterations=None
