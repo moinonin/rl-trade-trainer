@@ -52,7 +52,7 @@ def process_trading_history(csv_path: str, starting_balance: float) -> dict:
         df['timestamp'] = pd.date_range(
             start=datetime.now() - timedelta(days=len(df)),
             periods=len(df),
-            freq='H'
+            freq='h'
         )
         pbar.update(1)
         time.sleep(0.2)
@@ -83,16 +83,19 @@ def process_trading_history(csv_path: str, starting_balance: float) -> dict:
         pbar.update(1)
         time.sleep(0.2)
         
-        print("\n🧮 Calculating nmatrix score...")
+        print("\n🧮 Calculating nmatrix metrics...")
         min_date = trades_df['timestamp'].min()
         max_date = trades_df['timestamp'].max()
-        nmatrix_score = calculate_nmatrix(trades_df, min_date, max_date, starting_balance)
+        # Skip optimization for reporting
+        nmatrix_results = calculate_nmatrix(trades_df, min_date, max_date, starting_balance, optimize=False)
         pbar.update(1)
+        
         action_distribution = {
-            'do_nothing': df['do_nothing'].mean(),
-            'go_long': df['go_long'].mean(),
-            'go_short': df['go_short'].mean()
+            'do_nothing': df['do_nothing'].mean() if 'do_nothing' in df.columns else 0,
+            'go_long': df['go_long'].mean() if 'go_long' in df.columns else 0,
+            'go_short': df['go_short'].mean() if 'go_short' in df.columns else 0
         }
+        
         print("\n📊 Compiling final report...")
         report = {
             'rewards': rewards,
@@ -101,7 +104,10 @@ def process_trading_history(csv_path: str, starting_balance: float) -> dict:
             'avg_reward': np.mean(rewards),
             'max_drawdown': calculate_max_drawdown(rewards),
             'cumulative_reward': np.sum(rewards),
-            'nmatrix_score': nmatrix_score.get('signed_alpha')
+            'alpha': nmatrix_results.get('signed_alpha'),
+            'burke': nmatrix_results.get('metrics', {}).get('burke'),
+            'entropy': nmatrix_results.get('metrics', {}).get('entropy'),
+            'kelly_risk': nmatrix_results.get('metrics', {}).get('kelly_risk')
         }
         pbar.update(1)
     
@@ -127,7 +133,12 @@ def generate_performance_report(csv_path: str, starting_balance: float) -> dict:
             'avg_reward': '📈',
             'max_drawdown': '📉',
             'cumulative_reward': '💎',
-            'nmatrix_score': '🎯',
+            'alpha': '🎯',
+            'burke': '🛡️',
+            'entropy': '🧩',
+            'kelly_risk': '⚖️',
+            'avg_long_duration': '⏳',
+            'avg_short_duration': '⏳',
             'short_trades': '📉',
             'long_trades': '📈',
             'short_profit': '💹',
@@ -174,6 +185,28 @@ def generate_performance_report(csv_path: str, starting_balance: float) -> dict:
         report['profit_factor'] = abs(profitable_trades.sum() / losing_trades.sum()) if len(losing_trades) > 0 else float('inf')
         report['risk_reward_ratio'] = abs(report['avg_profit_per_trade'] / report['avg_loss_per_trade']) if report['avg_loss_per_trade'] != 0 else float('inf')
         
+        # Calculate duration metrics
+        def calculate_durations_from_states(state_str):
+            if pd.isna(state_str) or not isinstance(state_str, str):
+                return 0, 0
+            # Extract is_short (the 4th element in each tuple)
+            import re
+            matches = re.findall(r'\([^,)]+,\s*[^,)]+,\s*[^,)]+,\s*(\d+)\)', state_str)
+            if not matches:
+                return 0, 0
+            
+            is_shorts = [int(m) for m in matches]
+            from itertools import groupby
+            groups = [(key, sum(1 for _ in group)) for key, group in groupby(is_shorts)]
+            longs = [g[1] for g in groups if g[0] == 0]
+            shorts = [g[1] for g in groups if g[0] == 1]
+            return (sum(longs)/len(longs) if longs else 0), (sum(shorts)/len(shorts) if shorts else 0)
+
+        # Apply calculation to each episode
+        durations = df['state'].apply(calculate_durations_from_states)
+        report['avg_long_duration'] = durations.apply(lambda x: x[0]).mean()
+        report['avg_short_duration'] = durations.apply(lambda x: x[1]).mean()
+
         # Print metrics with appropriate formatting for each type
         for metric, value in report.items():
             emoji = metrics_emoji.get(metric, '📌')
@@ -185,6 +218,8 @@ def generate_performance_report(csv_path: str, starting_balance: float) -> dict:
                 print(f"{emoji} {metric}: [array of {len(value)} values]")
             elif metric in ['total_trades', 'short_trades', 'long_trades']:
                 print(f"{emoji} {metric}: {value}")
+            elif 'duration' in metric:
+                print(f"{emoji} {metric.replace('_', ' ').title()}: {value:.2f} steps")
             elif isinstance(value, (float, np.float64, np.float32)):
                 print(f"{emoji} {metric}: {value:.4f}")
             else:

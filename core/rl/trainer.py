@@ -35,9 +35,9 @@ class BidsTrainer:
             price_change = next_price - current_price
             
             # Use agent's action definitions for safety
-            if action == self.agent.ACTIONS[1]:  # go_long
+            if action == self.agent.ACTIONS[0]:  # go_long
                 return price_change if position_status == 0 else -abs(price_change)
-            elif action == self.agent.ACTIONS[2]:  # go_short
+            elif action == self.agent.ACTIONS[1]:  # go_short
                 return -price_change if position_status == 1 else -abs(price_change)
             else:  # do_nothing
                 return 0.0

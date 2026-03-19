@@ -113,7 +113,8 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
                      starting_balance: float, agent=None, 
                      print_frequency: int = 20, 
                      save_intermediate: bool = True,
-                     intermediate_save_frequency: int = 50) -> dict:
+                     intermediate_save_frequency: int = 50,
+                     optimize: bool = True) -> dict:
     """
     Calculate nmatrix and return results dictionary
     
@@ -135,6 +136,8 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
         Whether to save intermediate results
     intermediate_save_frequency: int, optional
         How often to save intermediate results (iterations)
+    optimize: bool, optional
+        Whether to perform Bayesian optimization (gp_minimize)
     
     Returns:
     --------
@@ -165,9 +168,18 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
         'intermediate_saves': []  # Track intermediate saves
     }
 
-    if (len(trades) == 0) or (min_date is None) or (max_date is None) or (min_date == max_date):
-        logging.warning("Invalid input parameters for calculate_nmatrix")
+    if len(trades) == 0:
+        logging.warning("Skipping nmatrix: No trades provided")
         return default_result
+    
+    if min_date is None or max_date is None:
+        logging.warning("Skipping nmatrix: Missing dates")
+        return default_result
+
+    # Ensure max_date is at least slightly after min_date to avoid division by zero
+    if min_date == max_date:
+        max_date = min_date + pd.Timedelta(seconds=1)
+        logging.debug("Adjusted max_date to avoid zero-duration interval")
 
     try:
         total_profit = trades['profit_abs'] / starting_balance
@@ -433,7 +445,7 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
         entropy = cal_entropy()
         EAR = signed_alpha/entropy
         target_entropy = 0
-        target_EAR = -0.5
+        target_EAR = target_alpha/entropy #-0.5
 
         
 
@@ -521,35 +533,186 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
         best_result = None
         intermediate_saves = []
         
-        print(f"\n{BLUE}{'═' * 60}{END}")
-        print(f"{BOLD}{CYAN}🚀 Starting optimization with {len(trades)} trades{END}")
-        print(f"{BLUE}{'═' * 60}{END}")
-        
-        for run_idx in range(5):
-            # Print run header with colors
-            print(f"\n{BLUE}{'═' * 50}{END}")
-            print(f"{BOLD}{CYAN}🔄 Run {run_idx+1}/5{END}")
-            print(f"{BLUE}{'─' * 50}{END}")
+        if optimize:
+            print(f"\n{BLUE}{'═' * 60}{END}")
+            print(f"{BOLD}{CYAN}🚀 Starting optimization with {len(trades)} trades{END}")
+            print(f"{BLUE}{'═' * 60}{END}")
             
-            discarded_params.clear()
-            iteration_counter[0] = 0  # Reset counter for each run
-            
-            result = gp_minimize(
-                getParams,
-                space,
-                noise=1e-5,
-                n_calls=100,
-                base_estimator="ET",
-                acq_func="EI",
-                acq_optimizer="sampling",
-                random_state=None,
-                callback=lambda res: print(f"{YELLOW}Best score so far: {GREEN if res.fun < 0 else RED}{res.fun:.6f}{END}") if len(res.x_iters) % print_frequency == 0 else None
-            )
-            
-            if best_result is None or result.fun < best_result.fun:
-                best_result = result
-                print(f"{GREEN}✨ New best result found in run {run_idx+1}: {result.fun:.6f}{END}")
+            for run_idx in range(5):
+                # Print run header with colors
+                print(f"\n{BLUE}{'═' * 50}{END}")
+                print(f"{BOLD}{CYAN}🔄 Run {run_idx+1}/5{END}")
+                print(f"{BLUE}{'─' * 50}{END}")
+                
+                discarded_params.clear()
+                iteration_counter[0] = 0  # Reset counter for each run
+                
+                result = gp_minimize(
+                    getParams,
+                    space,
+                    noise=1e-5,
+                    n_calls=100,
+                    base_estimator="ET",
+                    acq_func="EI",
+                    acq_optimizer="sampling",
+                    random_state=None,
+                    callback=lambda res: print(f"{YELLOW}Best score so far: {GREEN if res.fun < 0 else RED}{res.fun:.6f}{END}") if len(res.x_iters) % print_frequency == 0 else None
+                )
+                
+                if best_result is None or result.fun < best_result.fun:
+                    best_result = result
+                    print(f"{GREEN}✨ New best result found in run {run_idx+1}: {result.fun:.6f}{END}")
 
+                metrics = {
+                    'win_rate': win_rate,
+                    'kelly_risk': kelly_risk,
+                    'burke': burke,
+                    'entropy': entropy,
+                    'var_coeff': var_coeff,
+                    'total_trades': N,
+                    'profitable_trades': pos,
+                    'losing_trades': negs,
+                    'nmatrix': n_mat,
+                    'cofactors': cofactors,
+                    'ideal_cofactors': ideal_cofactors,
+                    'ideal_cofactors_norm': ideal_cofactors_norm,
+                    'cofactors_norm': cofactors_norm,
+                    'cofactors_norm_diff': cofactors_norm_diff,
+                    'mse_cofactors': mse_cofactors,
+                    'psd_dif': psd_dif,
+                    'median_profit_pct': median_profit_pct,
+                    'net_profit': net_profit,
+                    's': s,
+                    'signed_alpha': signed_alpha,
+                    'per_trade_profit': per_trade_profit,
+                    'per_trade_loss': per_trade_loss,
+                    'annual_down_volatility': annual_down_volatility,
+                    'annual_up_volatility': annual_up_volatility,
+                    'best_result': best_result,
+                    'short_trades': short_trades_count,
+                    'long_trades': long_trades_count,
+                    'optimization_progress': optimization_progress
+                }
+
+                # Print summary of this run with colors
+                alpha_color = GREEN if signed_alpha < 0 else RED
+                burke_color = GREEN if burke > 0.5 else (YELLOW if burke > 0 else RED)
+                entropy_color = GREEN if entropy < 0.3 else (YELLOW if entropy < 0.7 else RED)
+                score_color = GREEN if result.fun < 0 else RED
+                
+                print(f"\n{BLUE}{'═' * 50}{END}")
+                print(f"{BOLD}{CYAN}🔄 Run {run_idx+1}/5 Summary:{END}")
+                print(f"{BLUE}{'─' * 50}{END}")
+                print(f"{BOLD}Alpha:{END}   {alpha_color}{signed_alpha:.6f}{END}")
+                print(f"{BOLD}Burke:{END}   {burke_color}{burke:.6f}{END}")
+                print(f"{BOLD}Entropy:{END} {entropy_color}{entropy:.6f}{END}")
+                print(f"{BOLD}Score:{END}   {score_color}{result.fun:.6f}{END}")
+                
+                # Save intermediate results if requested
+                if save_intermediate and (run_idx+1) % intermediate_save_frequency == 0:
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    intermediate_dir = f"user_data/optimization_results/intermediate_run_{run_idx+1}_{timestamp}"
+                    save_dir, json_path = save_optimization_result(signed_alpha, result, metrics, base_path=intermediate_dir)
+                    if save_dir:
+                        intermediate_saves.append((save_dir, json_path))
+                        print(f"{CYAN}💾 Saved intermediate results to:{END} {YELLOW}{save_dir}{END}")
+
+                save_dir = None
+                json_path = None
+                # Use HyperoptHelper for best metrics
+                helper = HyperoptHelper()
+                best_metrics = helper.initialize_best_metrics_from_latest()
+                best_alpha = best_metrics.get('best_alpha', helper.initial_alpha)
+                best_burke = best_metrics.get('best_burke', helper.initial_burke)
+                best_entropy = best_metrics.get('best_entropy', helper.initial_entropy)
+
+                if metrics:
+                    # Always print current metrics summary with colors
+                    # Determine colors and improvement indicators
+                    alpha_improved = signed_alpha < best_alpha
+                    current_burke = metrics.get('burke', -1)
+                    current_entropy = metrics.get('entropy', 100)
+                    burke_improved = current_burke > best_burke
+                    entropy_improved = current_entropy < best_entropy
+                    
+                    alpha_color = GREEN if alpha_improved else RED
+                    burke_color = GREEN if burke_improved else RED
+                    entropy_color = GREEN if entropy_improved else RED
+                    
+                    alpha_indicator = "▼" if alpha_improved else "▲"
+                    burke_indicator = "▲" if burke_improved else "▼"
+                    entropy_indicator = "▼" if entropy_improved else "▲"
+                    
+                    print(f"\n{BLUE}{'═' * 60}{END}")
+                    print(f"{BOLD}{CYAN}📊 Current Metrics Summary:{END}")
+                    print(f"{BLUE}{'─' * 60}{END}")
+                    print(f"{BOLD}Alpha:{END}   {alpha_color}{signed_alpha:.6f} {alpha_indicator}{END} (Best: {YELLOW}{best_alpha:.6f}{END})")
+                    print(f"{BOLD}Burke:{END}   {burke_color}{current_burke:.6f} {burke_indicator}{END} (Best: {YELLOW}{best_burke:.6f}{END})")
+                    print(f"{BOLD}Entropy:{END} {entropy_color}{current_entropy:.6f} {entropy_indicator}{END} (Best: {YELLOW}{best_entropy:.6f}{END})")
+
+                    # Check if this is a best model (meets all criteria)
+                    if (signed_alpha < best_alpha and
+                        current_burke > best_burke and
+                        current_entropy < best_entropy):
+                        save_dir, json_path = save_optimization_result(signed_alpha, metrics["best_result"], metrics)
+                        print(f"\n{BLUE}{'═' * 60}{END}")
+                        print(f"{BOLD}{GREEN}🏆 BEST MODEL! All criteria met!{END}")
+                        print(f"{GREEN}✓ Alpha: {signed_alpha:.6f} < {best_alpha:.6f}{END}")
+                        print(f"{GREEN}✓ Burke: {current_burke:.6f} > {best_burke:.6f}{END}")
+                        print(f"{GREEN}✓ Entropy: {current_entropy:.6f} < {best_entropy:.6f}{END}")
+                        print(f"{BOLD}{CYAN}📂 Saved results to:{END} {YELLOW}{save_dir}{END}")
+                        try:
+                            helper.save_backup_metrics()
+                        except Exception as e:
+                            raise Exception(f"Error saving backup metrics: {e}")
+                        
+                        # Return with save_dir so the caller knows where to save the model
+                        return {
+                            'signed_alpha': signed_alpha,
+                            'optimization_result': metrics["best_result"],
+                            'metrics': metrics,
+                            'nmatrix_score': metrics["best_result"].fun if metrics["best_result"] else 0,
+                            'save_dir': save_dir,
+                            'json_path': json_path,
+                            'intermediate_saves': intermediate_saves
+                        }
+                    # Check if this is a candidate model (meets at least one criterion)
+                    elif (signed_alpha < best_alpha or
+                          current_burke > best_burke or
+                          current_entropy < best_entropy):
+                        # Save as a candidate model
+                        candidate_dir = f"user_data/optimization_results/candidate_alpha_{abs(signed_alpha):.4f}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                        save_dir, json_path = save_optimization_result(signed_alpha, metrics["best_result"], metrics, base_path=candidate_dir)
+                        
+                        print(f"\n{BLUE}{'═' * 60}{END}")
+                        print(f"{BOLD}{YELLOW}⭐ CANDIDATE MODEL! Some criteria met:{END}")
+                        
+                        # Show which criteria were met
+                        if signed_alpha < best_alpha:
+                            print(f"{GREEN}✓ Alpha: {signed_alpha:.6f} < {best_alpha:.6f}{END}")
+                        else:
+                            print(f"{RED}✗ Alpha: {signed_alpha:.6f} >= {best_alpha:.6f}{END}")
+                            
+                        if current_burke > best_burke:
+                            print(f"{GREEN}✓ Burke: {current_burke:.6f} > {best_burke:.6f}{END}")
+                        else:
+                            print(f"{RED}✗ Burke: {current_burke:.6f} <= {best_burke:.6f}{END}")
+                            
+                        if current_entropy < best_entropy:
+                            print(f"{GREEN}✓ Entropy: {current_entropy:.6f} < {best_entropy:.6f}{END}")
+                        else:
+                            print(f"{RED}✗ Entropy: {current_entropy:.6f} >= {best_entropy:.6f}{END}")
+                        
+                        print(f"{BOLD}{CYAN}📂 Saved results to:{END} {YELLOW}{save_dir}{END}")
+                        
+                        if save_dir:
+                            intermediate_saves.append((save_dir, json_path))
+                    else:
+                        print(f"\n{RED}❌ Results not saved - did not meet any improvement criteria.{END}")
+        else:
+            # Just calculate the metrics once for the existing trades
+            print(f"{CYAN}📊 Skipping optimization - calculating base metrics only.{END}")
+            
             metrics = {
                 'win_rate': win_rate,
                 'kelly_risk': kelly_risk,
@@ -575,128 +738,23 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
                 'per_trade_loss': per_trade_loss,
                 'annual_down_volatility': annual_down_volatility,
                 'annual_up_volatility': annual_up_volatility,
-                'best_result': best_result,
+                'best_result': None,
                 'short_trades': short_trades_count,
                 'long_trades': long_trades_count,
-                'optimization_progress': optimization_progress
+                'optimization_progress': []
             }
-
-            # Print summary of this run with colors
-            alpha_color = GREEN if signed_alpha < 0 else RED
-            burke_color = GREEN if burke > 0.5 else (YELLOW if burke > 0 else RED)
-            entropy_color = GREEN if entropy < 0.3 else (YELLOW if entropy < 0.7 else RED)
-            score_color = GREEN if result.fun < 0 else RED
             
-            print(f"\n{BLUE}{'═' * 50}{END}")
-            print(f"{BOLD}{CYAN}🔄 Run {run_idx+1}/5 Summary:{END}")
-            print(f"{BLUE}{'─' * 50}{END}")
-            print(f"{BOLD}Alpha:{END}   {alpha_color}{signed_alpha:.6f}{END}")
-            print(f"{BOLD}Burke:{END}   {burke_color}{burke:.6f}{END}")
-            print(f"{BOLD}Entropy:{END} {entropy_color}{entropy:.6f}{END}")
-            print(f"{BOLD}Score:{END}   {score_color}{result.fun:.6f}{END}")
+            # Return basic metrics for reporting
+            return {
+                'signed_alpha': signed_alpha,
+                'optimization_result': None,
+                'metrics': metrics,
+                'nmatrix_score': 0,
+                'save_dir': None,
+                'json_path': None,
+                'intermediate_saves': []
+            }
             
-            # Save intermediate results if requested
-            if save_intermediate and (run_idx+1) % intermediate_save_frequency == 0:
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                intermediate_dir = f"user_data/optimization_results/intermediate_run_{run_idx+1}_{timestamp}"
-                save_dir, json_path = save_optimization_result(signed_alpha, result, metrics, base_path=intermediate_dir)
-                if save_dir:
-                    intermediate_saves.append((save_dir, json_path))
-                    print(f"{CYAN}💾 Saved intermediate results to:{END} {YELLOW}{save_dir}{END}")
-
-            save_dir = None
-            json_path = None
-            # Use HyperoptHelper for best metrics
-            helper = HyperoptHelper()
-            best_metrics = helper.initialize_best_metrics_from_latest()
-            best_alpha = best_metrics.get('best_alpha', helper.initial_alpha)
-            best_burke = best_metrics.get('best_burke', helper.initial_burke)
-            best_entropy = best_metrics.get('best_entropy', helper.initial_entropy)
-
-            if metrics:
-                # Always print current metrics summary with colors
-                # Determine colors and improvement indicators
-                alpha_improved = signed_alpha < best_alpha
-                current_burke = metrics.get('burke', -1)
-                current_entropy = metrics.get('entropy', 100)
-                burke_improved = current_burke > best_burke
-                entropy_improved = current_entropy < best_entropy
-                
-                alpha_color = GREEN if alpha_improved else RED
-                burke_color = GREEN if burke_improved else RED
-                entropy_color = GREEN if entropy_improved else RED
-                
-                alpha_indicator = "▼" if alpha_improved else "▲"
-                burke_indicator = "▲" if burke_improved else "▼"
-                entropy_indicator = "▼" if entropy_improved else "▲"
-                
-                print(f"\n{BLUE}{'═' * 60}{END}")
-                print(f"{BOLD}{CYAN}📊 Current Metrics Summary:{END}")
-                print(f"{BLUE}{'─' * 60}{END}")
-                print(f"{BOLD}Alpha:{END}   {alpha_color}{signed_alpha:.6f} {alpha_indicator}{END} (Best: {YELLOW}{best_alpha:.6f}{END})")
-                print(f"{BOLD}Burke:{END}   {burke_color}{current_burke:.6f} {burke_indicator}{END} (Best: {YELLOW}{best_burke:.6f}{END})")
-                print(f"{BOLD}Entropy:{END} {entropy_color}{current_entropy:.6f} {entropy_indicator}{END} (Best: {YELLOW}{best_entropy:.6f}{END})")
-
-                # Check if this is a best model (meets all criteria)
-                if (signed_alpha < best_alpha and
-                    current_burke > best_burke and
-                    current_entropy < best_entropy):
-                    save_dir, json_path = save_optimization_result(signed_alpha, metrics["best_result"], metrics)
-                    print(f"\n{BLUE}{'═' * 60}{END}")
-                    print(f"{BOLD}{GREEN}🏆 BEST MODEL! All criteria met!{END}")
-                    print(f"{GREEN}✓ Alpha: {signed_alpha:.6f} < {best_alpha:.6f}{END}")
-                    print(f"{GREEN}✓ Burke: {current_burke:.6f} > {best_burke:.6f}{END}")
-                    print(f"{GREEN}✓ Entropy: {current_entropy:.6f} < {best_entropy:.6f}{END}")
-                    print(f"{BOLD}{CYAN}📂 Saved results to:{END} {YELLOW}{save_dir}{END}")
-                    try:
-                        helper.save_backup_metrics()
-                    except Exception as e:
-                        raise Exception(f"Error saving backup metrics: {e}")
-                    
-                    # Return with save_dir so the caller knows where to save the model
-                    return {
-                        'signed_alpha': signed_alpha,
-                        'optimization_result': metrics["best_result"],
-                        'metrics': metrics,
-                        'nmatrix_score': metrics["best_result"].fun if metrics["best_result"] else 0,
-                        'save_dir': save_dir,
-                        'json_path': json_path,
-                        'intermediate_saves': intermediate_saves
-                    }
-                # Check if this is a candidate model (meets at least one criterion)
-                elif (signed_alpha < best_alpha or
-                      current_burke > best_burke or
-                      current_entropy < best_entropy):
-                    # Save as a candidate model
-                    candidate_dir = f"user_data/optimization_results/candidate_alpha_{abs(signed_alpha):.4f}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-                    save_dir, json_path = save_optimization_result(signed_alpha, metrics["best_result"], metrics, base_path=candidate_dir)
-                    
-                    print(f"\n{BLUE}{'═' * 60}{END}")
-                    print(f"{BOLD}{YELLOW}⭐ CANDIDATE MODEL! Some criteria met:{END}")
-                    
-                    # Show which criteria were met
-                    if signed_alpha < best_alpha:
-                        print(f"{GREEN}✓ Alpha: {signed_alpha:.6f} < {best_alpha:.6f}{END}")
-                    else:
-                        print(f"{RED}✗ Alpha: {signed_alpha:.6f} >= {best_alpha:.6f}{END}")
-                        
-                    if current_burke > best_burke:
-                        print(f"{GREEN}✓ Burke: {current_burke:.6f} > {best_burke:.6f}{END}")
-                    else:
-                        print(f"{RED}✗ Burke: {current_burke:.6f} <= {best_burke:.6f}{END}")
-                        
-                    if current_entropy < best_entropy:
-                        print(f"{GREEN}✓ Entropy: {current_entropy:.6f} < {best_entropy:.6f}{END}")
-                    else:
-                        print(f"{RED}✗ Entropy: {current_entropy:.6f} >= {best_entropy:.6f}{END}")
-                    
-                    print(f"{BOLD}{CYAN}📂 Saved results to:{END} {YELLOW}{save_dir}{END}")
-                    
-                    if save_dir:
-                        intermediate_saves.append((save_dir, json_path))
-                else:
-                    print(f"\n{RED}❌ Results not saved - did not meet any improvement criteria.{END}")
-                    
         # If we've gone through all runs without finding a best model,
         # return the best result we found along with intermediate saves
         if best_result is not None:
