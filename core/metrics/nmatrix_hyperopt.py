@@ -450,7 +450,11 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
         discarded_params = []
         optimization_progress = []
         iteration_counter = [0]  # Use list for mutable counter in closure
-        
+        ''''
+        print(f"cofactors_norm: {cofactors_norm}, type: {type(cofactors_norm)}")
+        print(f"ideal_cofactors_norm: {ideal_cofactors_norm}, type: {type(ideal_cofactors_norm)}")
+        print(f"mse_cofactors: {mse_cofactors}")
+
         def getParams(params, lambda_param=0.1):
             try:
                 # Increment iteration counter
@@ -511,14 +515,109 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
             except Exception as e:
                 print(f"{RED}Error in getParams: {e}{END}")
                 return 100  # Changed from -100 to 100 to indicate a bad result
+        '''
+        def getParams(params, lambda_param=0.1):
+            try:
+                # Increment iteration counter
+                iteration_counter[0] += 1
+                current_iteration = iteration_counter[0]
+                
+                zeta, theta, sigma, alpha, gamma = params
 
+                # Get raw values
+                mse_val = float(mse_cofactors)
+                cofactors_val = float(cofactors_norm)
+                alpha_val = float(signed_alpha)
+                entropy_val = float(entropy)
+                ear_val = float(EAR)
+
+                # --- Fix: For alpha and EAR, we want them NEGATIVE ---
+                # If they're positive, that's bad and should be penalized heavily
+                if alpha_val > 0:
+                    # Positive alpha is terrible - square it to penalize heavily
+                    alpha_contrib = sigma * (alpha_val ** 2 * 1000)
+                else:
+                    # Negative alpha is good - use it directly
+                    alpha_contrib = sigma * alpha_val
+                    
+                if ear_val > 0:
+                    # Positive EAR is terrible
+                    ear_contrib = gamma * (ear_val ** 2 * 1000)
+                else:
+                    # Negative EAR is good
+                    ear_contrib = gamma * ear_val
+
+                # For MSE and cofactors, we want them near zero (always positive)
+                # So we use them directly - smaller is better
+                cofactors_contrib = zeta * cofactors_val
+                mse_contrib = theta * mse_val
+
+                # For entropy, lower is better (always positive)
+                entropy_contrib = alpha * entropy_val
+
+                # Weighted sum
+                objective_score = (
+                    cofactors_contrib +
+                    mse_contrib +
+                    alpha_contrib +
+                    entropy_contrib +
+                    ear_contrib
+                )
+
+                # --- Win penalty ---
+                if target_win_rate is None:
+                    default_min_win_rate = 0.5
+                    win_penalty = 1000.0 * max(0.0, default_min_win_rate - win_rate)
+                else:
+                    win_penalty_weight = 1000.0
+                    win_penalty = win_penalty_weight * max(0.0, target_win_rate - win_rate)
+
+                # L1 regularization
+                regularization_penalty = lambda_param * sum(abs(p) for p in params)
+
+                # Final score
+                nmatrix = objective_score + regularization_penalty + win_penalty
+
+                # Record contributions
+                progress_data = {
+                    'iteration': current_iteration,
+                    'params': params,
+                    'score': nmatrix,
+                    'contributions': {
+                        'cofactors': cofactors_contrib,
+                        'mse': mse_contrib,
+                        'alpha': alpha_contrib,
+                        'entropy': entropy_contrib,
+                        'EAR': ear_contrib,
+                        'win_penalty': win_penalty,
+                        'regularization': regularization_penalty,
+                        '_raw_alpha': alpha_val,
+                        '_raw_EAR': ear_val
+                    }
+                }
+                optimization_progress.append(progress_data)
+
+                if current_iteration % print_frequency == 0:
+                    score_color = GREEN if nmatrix < 0 else (YELLOW if nmatrix < 0.5 else RED)
+                    alpha_color = GREEN if alpha_val < 0 else RED
+                    ear_color = GREEN if ear_val < 0 else RED
+                    print(f"{CYAN}Iteration {current_iteration}:{END} Score = {score_color}{nmatrix:.6f}{END}")
+                    print(f"  Alpha: {alpha_color}{alpha_val:.6e}{END}, EAR: {ear_color}{ear_val:.6e}{END}")
+
+                return nmatrix
+
+            except Exception as e:
+                print(f"{RED}Error in getParams: {e}{END}")
+                import traceback
+                traceback.print_exc()
+                return 100.0
         # Define search space
         space = [
-            Real(-1.0, 1.0, name='zeta'),
-            Real(-1.0, 1.0, name='theta'),
-            Real(-1.0, 1.0, name='sigma'),
-            Real(-1.0, 1.0, name='alpha'),
-            Real(-1.0, 1.0, name='gamma')
+            Real(0.0, 1.0, name='zeta'),
+            Real(0.0, 1.0, name='theta'),
+            Real(-1.0, 0.0, name='sigma'),
+            Real(0.0, 1.0, name='alpha'),
+            Real(-1.0, 0.0, name='gamma')
         ]
 
         best_result = None

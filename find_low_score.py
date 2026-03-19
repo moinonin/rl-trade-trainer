@@ -74,7 +74,7 @@ if __name__ == "__main__":
             threshold = float(sys.argv[2])
         except ValueError:
             print("Threshold must be a number. Using default -0.3896.")
-            threshold = 0.04
+            threshold = 0.2
     elif len(sys.argv) == 2:
         # Second argument might be directory, or threshold if only one argument?
         # We'll be safe: if the argument looks like a number, treat as threshold and use current dir
@@ -83,9 +83,9 @@ if __name__ == "__main__":
             target_dir = "."
         except ValueError:
             target_dir = sys.argv[1]
-            threshold = 0.04   # default
+            threshold = 0.2   # default
     else:
         target_dir = "."
-        threshold = 0.04
+        threshold = 0.2
 
     search_json_files(target_dir, threshold)
