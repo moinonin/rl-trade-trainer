@@ -4,10 +4,10 @@ from pandas import Series
 import talib.abstract as ta
 import numpy as np
 import logging, fire
-from defirl.rl import RLmodel_bids as bid
-from defirl.rl import RLmodel_large as large
+from defirl.rlhf_long import RLmodel_bids as bid
+#from defirl.rl import RLmodel_large as large
 import time
-from defirl.rl import RLmodel_small as small # uses defirl==0.5.0
+#from defirl.rl import RLmodel_small as small # uses defirl==0.5.0
 
 from nlp.imit_main import imit_signal as imit
 from nlp.nlp_main import nlp_signal as nlp # nlp-project==0.1.1
@@ -145,7 +145,7 @@ class Fetcher:
         except Exception as e:
             logging.error(f"Error computing bidsig: {e}")
             return None
-
+    '''
     def getSmallsig(self, is_short: int, ml_candle: int = 1):
         df = self.computed_indicators_df()
 
@@ -229,7 +229,7 @@ class Fetcher:
         except Exception as e:
             print(f"Error computing largesig: {e}")
             return None
-
+    '''
     # Compute nlp methods
     def compute_ml_input_signal(self):
         try:

@@ -29,10 +29,11 @@ def calculate_max_drawdown(rewards):
 def process_trading_history(csv_path: str, starting_balance: float) -> dict:
     """
     Process trading history CSV with columns: action, reward, state, next_state
+    (Minimal update: only the two requested sections and timestamp frequency fix)
     """
     print("\n🤖 Initializing trading history analysis...\n")
-    time.sleep(0.5)  # Add dramatic effect
-    
+    time.sleep(0.5)
+
     # Read trading history with progress bar
     print("📊 Loading trading data...")
     df = pd.read_csv(csv_path)
@@ -40,27 +41,29 @@ def process_trading_history(csv_path: str, starting_balance: float) -> dict:
     print(df.columns)
     print(df.head())
     time.sleep(0.3)
-    
+
     with tqdm(total=6, desc="🔄 Processing metrics", ncols=100) as pbar:
         # Get rewards directly from the 'reward' column
         rewards = df['avg_reward'].values
         pbar.update(1)
         time.sleep(0.2)
-        
-        # Create timestamps for nmatrix calculation
+
+        # Create timestamps for nmatrix calculation (fixed freq='h')
         print("\n⏰ Generating temporal analysis framework...")
         df['timestamp'] = pd.date_range(
             start=datetime.now() - timedelta(days=len(df)),
             periods=len(df),
-            freq='H'
+            freq='h'                     # changed from 'H' to 'h'
         )
         pbar.update(1)
         time.sleep(0.2)
-        
+
         # Extract is_short from state tuples
         print("🎯 Extracting position states...")
-        state_components = df['state'].str.extract(r'\(([^,)]+),\s*([^,)]+),\s*([^,)]+)(?:,\s*(\d+))?\)')
-        
+        state_components = df['state'].str.extract(
+            r'\(([^,)]+),\s*([^,)]+),\s*([^,)]+)(?:,\s*(\d+))?\)'
+        )
+
         # Create trades DataFrame with all state components
         trades_df = pd.DataFrame({
             'timestamp': df['timestamp'],
@@ -70,6 +73,8 @@ def process_trading_history(csv_path: str, starting_balance: float) -> dict:
             'sma_compare': state_components[2].astype(float),
             'is_short': pd.to_numeric(state_components[3], errors='coerce').fillna(0).astype(int)
         })
+
+        # --- FIRST UPDATED SECTION: action column for nmatrix (unchanged logic) ---
         trades_df['action'] = np.where(
             trades_df['is_short'] == 1,
             'go_short',
@@ -79,20 +84,25 @@ def process_trading_history(csv_path: str, starting_balance: float) -> dict:
                 'do_nothing'
             )
         )
+        # -------------------------------------------------------------------------
 
         pbar.update(1)
         time.sleep(0.2)
-        
+
         print("\n🧮 Calculating nmatrix score...")
         min_date = trades_df['timestamp'].min()
         max_date = trades_df['timestamp'].max()
         nmatrix_score = calculate_nmatrix(trades_df, min_date, max_date, starting_balance)
         pbar.update(1)
+
+        # --- SECOND UPDATED SECTION: action distribution from one‑hot columns ---
         action_distribution = {
             'do_nothing': df['do_nothing'].mean(),
-            'go_long': df['go_long'].mean(),
-            'go_short': df['go_short'].mean()
+            'go_long': df['go_long'].mean() if 'go_long' in df.columns else 0,
+            'go_short': df['go_short'].mean() if 'go_short' in df.columns else 0
         }
+        # ------------------------------------------------------------------------
+
         print("\n📊 Compiling final report...")
         report = {
             'rewards': rewards,
@@ -101,10 +111,10 @@ def process_trading_history(csv_path: str, starting_balance: float) -> dict:
             'avg_reward': np.mean(rewards),
             'max_drawdown': calculate_max_drawdown(rewards),
             'cumulative_reward': np.sum(rewards),
-            'nmatrix_score': nmatrix_score.get('signed_alpha')
+            'nmatrix_score': nmatrix_score.get('signed_alpha') if nmatrix_score else None
         }
         pbar.update(1)
-    
+
     print("\n✨ Analysis complete! Generating report...\n")
     return report
 

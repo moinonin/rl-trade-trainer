@@ -433,7 +433,8 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
         entropy = cal_entropy()
         EAR = signed_alpha/entropy
         target_entropy = 0
-        target_EAR = -0.5
+        target_EAR = -1 #target_alpha/entropy #-0.5
+
 
         
 
@@ -442,7 +443,8 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
         mse_cofactors_deviation = min(0, mse_cofactors - mse_cofactors_target)  # Penalize if above the target
         signed_alpha_deviation = min(0, signed_alpha - target_alpha)  # Penalize if above the target
         entropy_deviation = min(0, entropy - target_entropy)  # Penalize if above the target
-        EAR_deviation = min(0, target_EAR)  # Penalize if above the target 
+        #EAR_deviation = min(0, target_EAR)  # Penalize if above the target 
+        EAR_penalty = max(0, EAR)
 
         # Initialize a list to track discarded parameters and optimization progress
         discarded_params = []
@@ -462,7 +464,8 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
                 mse_cofactors_contribution = theta * mse_cofactors_deviation
                 signed_alpha_contribution = sigma * signed_alpha_deviation
                 entropy_contribution = alpha * entropy_deviation
-                EAR_contribution = gamma * EAR_deviation
+                #EAR_contribution = gamma * EAR_deviation
+                EAR_contribution = gamma * EAR_penalty
 
                 # Calculate the total objective score
                 objective_score = (

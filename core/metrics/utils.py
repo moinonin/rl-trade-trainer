@@ -50,6 +50,7 @@ class HyperoptHelper:
         if include_candidates:
             patterns.append("user_data/optimization_results/candidate_*")
             patterns.append("user_data/optimization_results/intermediate_*")
+            patterns.append("user_data/optimization_results/alpha_*")
         
         # Get all directories matching the patterns
         all_dirs = []
@@ -203,6 +204,7 @@ class HyperoptHelper:
         if include_candidates:
             patterns.append("user_data/optimization_results/candidate_*")
             patterns.append("user_data/optimization_results/intermediate_*")
+            patterns.append("user_data/optimization_results/alpha_*")
         
         all_dirs = []
         for pattern in patterns:
@@ -337,7 +339,7 @@ class HyperoptHelper:
 
 def print_all_metrics():
     base_dir = "user_data/optimization_results"
-    patterns = ["candidate*", "intermediate*"]
+    patterns = ["candidate*", "intermediate*","alpha_*"]
     
     print("\nSearching for metrics in all optimization directories...")
     print("=" * 80)

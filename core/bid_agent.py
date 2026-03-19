@@ -264,29 +264,29 @@ class BidAgentTrainer:
         """
         # Initial validation
         logging.info(f"Initial DataFrame shape: {df.shape}")
-        
+
         if df.empty:
             raise ValueError("Empty DataFrame provided to prepare_training_data")
-            
+
         # Verify required columns exist
         required_cols = ['ask', 'bid', 'sma-compare', 'close']
         missing_cols = [col for col in required_cols if col not in df.columns]
         if missing_cols:
             raise ValueError(f"Missing required columns: {missing_cols}")
-            
+
         states = []
         positions = []
         trade_positions = []
         # This section uses old models to get initial positions
-        #------------------------------------------------------------------------------------------------------------
+        # ------------------------------------------------------------------------------------------------------------
         # Collect predictions from old models
-        #------------------------------------------------------------------------------------------------------------
+        # ------------------------------------------------------------------------------------------------------------
         # Get predictions for each row
-        min_required_rows = 27 #max(self.long_ml_candle, self.short_ml_candle)
-        
+        min_required_rows = 27  # max(self.long_ml_candle, self.short_ml_candle)
+
         for i in range(len(df)):
             current_row = df.iloc[i]  # Get the current row
-            
+
             if i < min_required_rows - 1:
                 # Use default position (1 for short) for initial states
                 initial_is_short = 1
@@ -294,47 +294,55 @@ class BidAgentTrainer:
                 positions.append(initial_is_short)
                 trade_positions.append(None)
                 continue
-            
-            current_df = df.iloc[:i+1].copy()
-            
+
+            current_df = df.iloc[:i + 1].copy()
+
             # Get predictions
             long_next_action = getBidsig(is_short=0, ml_candle=self.long_ml_candle, dataframe=current_df).predict_action().get('action')
-            short_next_action = getNlpsig(ml_candle=self.short_ml_candle, dataframe=current_df)
-            
+            short_next_action = getBidsig(is_short=1, ml_candle=self.long_ml_candle, dataframe=current_df).predict_action().get('action')
+            #short_next_action = getNlpsig(ml_candle=self.short_ml_candle, dataframe=current_df)
+
             # Determine position
-            if long_next_action == 'go_long' and (short_next_action == 'go_short' or pd.isna(short_next_action) or short_next_action == 'do_nothing'):
-                is_short = 0
-            elif (long_next_action == 'go_long' or pd.isna(long_next_action) or long_next_action == 'do_nothing') and short_next_action == 'go_short':
-                is_short = 1
+            # Modified logic: go long when long model says 'do_nothing' and short model does not exclusively say 'go_short'
+            #if long_next_action == 'do_nothing' and (short_next_action == 'go_short' or pd.isna(short_next_action) or short_next_action == 'do_nothing'):
+            if long_next_action != 'go_long':
+                is_short = 0  # long
+            #elif (long_next_action == 'go_long' or pd.isna(long_next_action)) and short_next_action == 'go_short':
+            elif long_next_action == 'go_long':
+                is_short = 1  # short
             else:
-                is_short = positions[-1] if positions else 1
+                is_short = positions[-1] if positions else 1  # hold previous position
 
             # Update base_state with the determined is_short
             full_state = (current_row['ask'], current_row['bid'], current_row['sma-compare'], is_short)
             states.append(full_state)
             positions.append(is_short)
-            
-            # Track actual position
-            if long_next_action == 'go_long':
+
+            # Track actual trade position based on the new interpretation
+            # Now 'do_nothing' means long, 'go_short' means short, everything else (including 'go_long') means no action
+            #if long_next_action == 'do_nothing':
+            if long_next_action != 'go_long':
                 trade_positions.append('long')
-            elif short_next_action == 'go_short':
+            #elif short_next_action == 'go_short':
+            elif short_next_action == 'go_long':
                 trade_positions.append('short')
             else:
                 trade_positions.append(None)
-        
+
         # Update position tracking
         self.position = 'short' if positions[-1] == 1 else 'long'
-        
+
         # Normalize prices
         prices = df['close'].tolist()
         prices = np.array(prices) / np.mean(prices)
-        
+
         logging.info(f"Prepared {len(states)} states, {len(prices)} prices, {len(trade_positions)} positions")
         return states, prices.tolist(), trade_positions
 
     def update_position(self, prediction: str, current_price: float):
         """Update position based on model prediction"""
-        if prediction == 'go_long' and self.position != 'long':
+        # Now 'do_nothing' is the signal to go long, 'go_short' to go short, 'exit' to close
+        if prediction == 'do_nothing' and self.position != 'long':
             self.position = 'long'
             self.entry_price = current_price
             logging.info(f"Position changed to LONG at price {current_price}")
