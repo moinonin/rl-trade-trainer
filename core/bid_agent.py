@@ -305,10 +305,10 @@ class BidAgentTrainer:
             # Determine position
             # Modified logic: go long when long model says 'do_nothing' and short model does not exclusively say 'go_short'
             #if long_next_action == 'do_nothing' and (short_next_action == 'go_short' or pd.isna(short_next_action) or short_next_action == 'do_nothing'):
-            if long_next_action != 'go_long':
+            if long_next_action == 'do_nothing':
                 is_short = 0  # long
             #elif (long_next_action == 'go_long' or pd.isna(long_next_action)) and short_next_action == 'go_short':
-            elif long_next_action == 'go_long':
+            elif long_next_action == 'go_short':
                 is_short = 1  # short
             else:
                 is_short = positions[-1] if positions else 1  # hold previous position
@@ -321,10 +321,10 @@ class BidAgentTrainer:
             # Track actual trade position based on the new interpretation
             # Now 'do_nothing' means long, 'go_short' means short, everything else (including 'go_long') means no action
             #if long_next_action == 'do_nothing':
-            if long_next_action != 'go_long':
+            if long_next_action == 'do_nothing':
                 trade_positions.append('long')
             #elif short_next_action == 'go_short':
-            elif short_next_action == 'go_long':
+            elif short_next_action == 'go_short':
                 trade_positions.append('short')
             else:
                 trade_positions.append(None)

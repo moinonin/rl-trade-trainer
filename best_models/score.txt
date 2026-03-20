@@ -1,0 +1,6 @@
+{
+  "score": 0.027593144305964334,
+  "raw_alpha": -8.882329287596136e-06,
+  "file": "best_models/optimization_results_20260320_093755.json",
+  "iteration": 61
+}
