@@ -54,7 +54,7 @@ def extract_blocks(content):
     
     return blocks
 
-def clean_file(file_path):
+def clean_file(file_path, score_threshold=None):
     """Read and clean the file into valid JSON."""
     
     # Read the file
@@ -74,9 +74,19 @@ def clean_file(file_path):
         print("No valid JSON blocks found.", file=sys.stderr)
         return None
     
+    # Optionally keep only blocks at/under the requested score threshold.
+    if score_threshold is not None:
+        filtered_blocks = []
+        for block in blocks:
+            score = block.get("score")
+            if isinstance(score, (int, float)) and score <= score_threshold:
+                filtered_blocks.append(block)
+        blocks = filtered_blocks
+
     # Build the final JSON structure
     result = {
         "lowest_alpha_value": lowest_alpha,
+        "score_threshold": score_threshold,
         "metrics": {
             "optimization_progress": blocks
         }
@@ -86,6 +96,14 @@ def clean_file(file_path):
 
 def main():
     """Main entry point."""
+    score_threshold = None
+    if len(sys.argv) > 2:
+        try:
+            score_threshold = float(sys.argv[2])
+        except ValueError:
+            print(f"Invalid score threshold: {sys.argv[2]}", file=sys.stderr)
+            sys.exit(1)
+
     if len(sys.argv) > 1:
         file_path = sys.argv[1]
     else:
@@ -122,7 +140,7 @@ def main():
         return
     
     # Process file
-    result = clean_file(file_path)
+    result = clean_file(file_path, score_threshold=score_threshold)
     if result:
         print(json.dumps(result, indent=2))
     else:

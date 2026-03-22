@@ -133,3 +133,4 @@ dmypy.json
 *.npy
 core/rl/pkls/optimization_results*.json
 *.gz
+user_data/optimization_results/*

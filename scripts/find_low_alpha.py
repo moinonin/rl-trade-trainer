@@ -3,6 +3,8 @@ import json
 import sys
 from pathlib import Path
 
+MIN_WIN_RATE = 0.71
+
 def find_alpha_blocks(data, current_path=""):
     """
     Recursively traverse JSON data and yield (path, alpha, block)
@@ -27,6 +29,25 @@ def find_alpha_blocks(data, current_path=""):
         for idx, item in enumerate(data):
             yield from find_alpha_blocks(item, f"{current_path}[{idx}]")
 
+
+def extract_win_rate_from_block(block):
+    """
+    Compatibility helper: infer win proxy from contributions.matrix.
+    Current convention in repo stores win-like metric at matrix[-2][-2].
+    """
+    try:
+        contributions = block.get("contributions", {})
+        matrix = contributions.get("matrix")
+        if isinstance(matrix, list) and len(matrix) >= 2:
+            second_last = matrix[-2]
+            if isinstance(second_last, list) and len(second_last) >= 2:
+                value = second_last[-2]
+                if isinstance(value, (int, float)):
+                    return float(value)
+    except Exception:
+        pass
+    return None
+
 def search_json_files(directory):
     directory = Path(directory)
     if not directory.is_dir():
@@ -50,10 +71,15 @@ def search_json_files(directory):
             continue
 
         for path, alpha, block in find_alpha_blocks(data):
-            found_entries.append((alpha, json_file, path, block))
+            win_rate = extract_win_rate_from_block(block)
+            if alpha < 0 and win_rate is not None and win_rate >= MIN_WIN_RATE:
+                found_entries.append((alpha, win_rate, json_file, path, block))
 
     if not found_entries:
-        print("No 'alpha' values found inside any 'contributions' object.")
+        print(
+            "No blocks matched constraints: "
+            f"_raw_alpha < 0 and win_rate >= {MIN_WIN_RATE:.2f}."
+        )
         return
 
     # Find the minimum alpha value
@@ -63,9 +89,10 @@ def search_json_files(directory):
     min_entries = [entry for entry in found_entries if entry[0] == min_alpha]
 
     print(f"Lowest alpha value found: {min_alpha}\n")
-    for alpha, file, path, block in min_entries:
+    for alpha, win_rate, file, path, block in min_entries:
         print(f"File: {file}")
         print(f"Path: {path}")
+        print(f"Win rate: {win_rate:.2%}")
         # Show a few details from the block (optional)
         iteration = block.get('iteration', 'N/A')
         print(f"Iteration: {iteration}")

@@ -32,6 +32,23 @@ class HyperoptHelper:
     initial_entropy: float = 1  # Lower is better
     save_intermediate: bool = True
 
+    def _resolve_metrics_json_path(self, directory: str) -> Optional[str]:
+        """
+        Resolve optimization_results.json for a given results directory.
+        Supports both direct files and nested alpha_*/optimization_results.json layouts.
+        """
+        direct_path = os.path.join(directory, 'optimization_results.json')
+        if os.path.exists(direct_path):
+            return direct_path
+
+        nested_candidates = glob.glob(os.path.join(directory, 'alpha_*', 'optimization_results.json'))
+        if nested_candidates:
+            # Prefer newest nested result if multiple are present.
+            nested_candidates.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+            return nested_candidates[0]
+
+        return None
+
     def fetch_latest_metrics(self, include_candidates=False):
         """
         Enhanced update with score tracking
@@ -84,23 +101,24 @@ class HyperoptHelper:
                 }
             }
             
-        latest_dir = sorted_dirs[0]
-        print(f"Using latest directory: {latest_dir}")
-
-        # Read parameters from JSON
-        json_path = os.path.join(latest_dir, 'optimization_results.json')
-        if not os.path.exists(json_path):
-            print(f"File not found: {json_path}")
-            try:
-                with open(os.path.join(self.model_dirs, 'optimization_results.json'), 'r') as f:
+        for latest_dir in sorted_dirs:
+            json_path = self._resolve_metrics_json_path(latest_dir)
+            if json_path:
+                print(f"Using latest directory: {latest_dir}")
+                with open(json_path, 'r') as f:
                     data = json.load(f)
                     return data or {}
-            except FileNotFoundError:
-                print(f"File not found: {json_path}")
-                return {}
-        with open(json_path, 'r') as f:
-            data = json.load(f)
-            return data or {}
+            else:
+                print(f"File not found: {latest_dir}/optimization_results.json (and no nested alpha_* match)")
+
+        # Fallback to model snapshot if no optimization results file found anywhere.
+        try:
+            with open(os.path.join(self.model_dirs, 'optimization_results.json'), 'r') as f:
+                data = json.load(f)
+                return data or {}
+        except FileNotFoundError:
+            print(f"File not found: {os.path.join(self.model_dirs, 'optimization_results.json')}")
+            return {}
 
     def initialize_best_metrics_from_latest(self, include_candidates=False):
         """

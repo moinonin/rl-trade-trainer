@@ -1,3 +1,5 @@
+.PHONY: train proc purge filter find-min-score-all find-min-details auto-filter best-model all
+
 train:
 	python3.11 core/bid_agent.py
 proc:
@@ -6,14 +8,15 @@ purge:
 	rm -rf user_data/optimization_results/*
 	rm core/rl/pkls/*
 
-thresholds ?= 0.03
+thresholds ?= 70000
 base_dir ?= user_data/optimization_results/ # core/rl/pkls/ # 
 best_models_txt_file ?= best_models/optimization_results_20260320_093755.txt
 best_models_json_file ?= best_models/optimization_results_20260320_093755.json
 
 filter:
 	python scripts/find_low_alpha.py $(base_dir) > $(best_models_txt_file)
-	python scripts/clean_models.py $(best_models_txt_file) > $(best_models_json_file)
+	#python scripts/find_high_win.py $(base_dir) >> $(best_models_txt_file)
+	python scripts/clean_models.py $(best_models_txt_file) $(thresholds) > $(best_models_json_file)
 
 # Get global minimum score
 find-min-score-all:
@@ -25,7 +28,15 @@ find-min-score-all:
 
 # Find details for the global minimum score
 find-min-details:
+	@if [ ! -s "$(best_models_txt_file)" ]; then \
+		echo "Error: missing or empty $(best_models_txt_file). Run 'make filter' first."; \
+		exit 1; \
+	fi
 	$(eval MIN_SCORE := $(shell grep -Eo '"score":[[:space:]]*[-0-9.e+]+' $(best_models_txt_file) | awk -F: '{gsub(/[[:space:]]/, "", $$2); print $$2}' | sort -n | head -n 1))
+	@if [ -z "$(MIN_SCORE)" ]; then \
+		echo "Error: could not extract MIN_SCORE from $(best_models_txt_file)."; \
+		exit 1; \
+	fi
 	$(eval RAW_ALPHA := $(shell awk -v score="$(MIN_SCORE)" 'BEGIN{RS=""; FS="\n"} $$0 ~ score {for(i=1;i<=NF;i++) if($$i ~ /_raw_alpha/) {split($$i,a,":"); gsub(/[ ,}]/, "", a[2]); print a[2]; exit}}' $(best_models_txt_file)))
 	$(eval FILE_PATH := $(shell awk -v score="$(MIN_SCORE)" 'BEGIN{RS=""; FS="\n"} $$0 ~ score {for(i=1;i<=NF;i++) if($$i ~ /^File:/) {gsub(/^File: /, "", $$i); print $$i; exit}}' $(best_models_txt_file)))
 	
@@ -44,7 +55,15 @@ auto-filter:
 # Combined workflow: find min details without running filter again
 best-model:
 	@echo "Finding best model (global minimum)..."
+	@if [ ! -s "$(best_models_txt_file)" ]; then \
+		echo "Error: missing or empty $(best_models_txt_file). Run 'make filter' first."; \
+		exit 1; \
+	fi
 	$(eval MIN_SCORE := $(shell grep -Eo '"score":[[:space:]]*[-0-9.e+]+' $(best_models_txt_file) | awk -F: '{gsub(/[[:space:]]/, "", $$2); print $$2}' | sort -n | head -n 1))
+	@if [ -z "$(MIN_SCORE)" ]; then \
+		echo "Error: could not extract MIN_SCORE from $(best_models_txt_file)."; \
+		exit 1; \
+	fi
 	$(eval RAW_ALPHA := $(shell awk -v score="$(MIN_SCORE)" 'BEGIN{RS=""; FS="\n"} $$0 ~ score {for(i=1;i<=NF;i++) if($$i ~ /_raw_alpha/) {split($$i,a,":"); gsub(/[ ,}]/, "", a[2]); print a[2]; exit}}' $(best_models_txt_file)))
 	$(eval FILE_PATH := $(shell awk -v score="$(MIN_SCORE)" 'BEGIN{RS=""; FS="\n"} $$0 ~ score {for(i=1;i<=NF;i++) if($$i ~ /^File:/) {gsub(/^File: /, "", $$i); print $$i; exit}}' $(best_models_txt_file)))
 	
@@ -56,4 +75,4 @@ best-model:
 	@echo "To use this model, run:"
 	@echo "  python scripts/use_model.py --alpha $(RAW_ALPHA) --file \"$(FILE_PATH)\""
 all:
-	make filter && make best-model
+	$(MAKE) filter && $(MAKE) best-model
