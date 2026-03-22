@@ -63,6 +63,23 @@ class BidAgentTrainer:
         # Best model tracking
         self.best_metrics = {"entropy": 0.9, "burke": 0.00, "alpha": 1.0}
         self.best_model = None
+
+    def _extract_min_raw_alpha(self, obj) -> Optional[float]:
+        """Recursively find the minimum numeric '_raw_alpha' in nested metrics payloads."""
+        values = []
+
+        def _walk(x):
+            if isinstance(x, dict):
+                for k, v in x.items():
+                    if k == "_raw_alpha" and isinstance(v, (int, float)):
+                        values.append(float(v))
+                    _walk(v)
+            elif isinstance(x, list):
+                for item in x:
+                    _walk(item)
+
+        _walk(obj)
+        return min(values) if values else None
         
     def run_hyperopt(self, 
                     episode_df: pd.DataFrame, 
@@ -153,6 +170,9 @@ class BidAgentTrainer:
                 signed_alpha = result.get('signed_alpha', 0)
                 save_dir = result.get('save_dir')
                 intermediate_saves = result.get('intermediate_saves', [])
+                min_raw_alpha = self._extract_min_raw_alpha(metrics)
+                if min_raw_alpha is None and isinstance(signed_alpha, (int, float)):
+                    min_raw_alpha = float(signed_alpha)
                 
                 print(f"\n{'='*50}")
                 print(f"Hyperopt Results:")
@@ -181,10 +201,16 @@ class BidAgentTrainer:
                     for i, save_path in enumerate(intermediate_saves):
                         print(f"{i+1}. {save_path}")
                         self.agent.save_model_with_metrics(save_path)
+
+                if min_raw_alpha is not None:
+                    updated = self.agent.persist_params_if_best_raw_alpha(min_raw_alpha)
+                    if updated:
+                        print(f"{self.GREEN}Updated agent params from new best _raw_alpha: {min_raw_alpha:.10f}{self.END}")
                 
                 return {
                     'nmatrix_score': result.get('nmatrix_score', 0),
                     'signed_alpha': signed_alpha,
+                    'min_raw_alpha': min_raw_alpha,
                     'trades_analyzed': len(trades_df),
                     'timestamp': pd.Timestamp.now().isoformat(),
                     'metrics': metrics,
@@ -209,18 +235,37 @@ class BidAgentTrainer:
 
     def generate_episode_report(self, episode_df: pd.DataFrame, starting_balance: float, episode_num: int) -> dict:
         """
-        Generate a simplified performance report for a single training episode
+        Generate a performance report for a single training episode including trade durations
         """
         total_trades = len(episode_df)
         winning_trades = len(episode_df[episode_df['reward'] > 0])
         win_rate = winning_trades / total_trades if total_trades > 0 else 0
-        
+
         avg_reward = episode_df['reward'].mean()
         max_reward = episode_df['reward'].max()
         min_reward = episode_df['reward'].min()
-        
+
+        # Calculate trade durations
+        # Extract is_short from the state tuples (assuming 4th element is is_short)
+        is_shorts = []
+        for s in episode_df['state'].tolist():
+            if isinstance(s, (list, tuple)) and len(s) >= 4:
+                is_shorts.append(s[3])
+            else:
+                is_shorts.append(0) # Default to long
+
+        # Group contiguous positions to find durations
+        from itertools import groupby
+        position_groups = [(key, sum(1 for _ in group)) for key, group in groupby(is_shorts)]
+
+        long_durations = [g[1] for g in position_groups if g[0] == 0]
+        short_durations = [g[1] for g in position_groups if g[0] == 1]
+
+        avg_long_duration = sum(long_durations) / len(long_durations) if long_durations else 0
+        avg_short_duration = sum(short_durations) / len(short_durations) if short_durations else 0
+
         action_distribution = episode_df['action'].value_counts(normalize=True).to_dict()
-        
+
         return {
             'episode_number': episode_num,
             'total_trades': total_trades,
@@ -228,16 +273,13 @@ class BidAgentTrainer:
             'avg_reward': avg_reward,
             'max_reward': max_reward,
             'min_reward': min_reward,
+            'avg_long_duration': avg_long_duration,
+            'avg_short_duration': avg_short_duration,
             'action_distribution': action_distribution,
             'final_balance': starting_balance * (1 + episode_df['reward'].sum()),
             'timestamp': pd.Timestamp.now().isoformat(),
             'state': ','.join([str(x) for x in episode_df['state'].tolist()])
-            #'ask': [state[0] for state in episode_df['state']],
-            #'bid': [state[1] for state in episode_df['state']],
-            #'sma_compare': [state[2] for state in episode_df['state']],
-            #'is_short': [state[3] for state in episode_df['state']]
         }
-
     def save_episode_reports(self, reports: List[dict], output_path: str):
         """
         Save episode reports to a CSV file
@@ -264,89 +306,111 @@ class BidAgentTrainer:
         """
         # Initial validation
         logging.info(f"Initial DataFrame shape: {df.shape}")
-
+        
         if df.empty:
             raise ValueError("Empty DataFrame provided to prepare_training_data")
-
+            
         # Verify required columns exist
         required_cols = ['ask', 'bid', 'sma-compare', 'close']
         missing_cols = [col for col in required_cols if col not in df.columns]
         if missing_cols:
             raise ValueError(f"Missing required columns: {missing_cols}")
-
+            
         states = []
         positions = []
         trade_positions = []
         # This section uses old models to get initial positions
-        # ------------------------------------------------------------------------------------------------------------
+        #------------------------------------------------------------------------------------------------------------
         # Collect predictions from old models
-        # ------------------------------------------------------------------------------------------------------------
+        #------------------------------------------------------------------------------------------------------------
         # Get predictions for each row
-        min_required_rows = 27  # max(self.long_ml_candle, self.short_ml_candle)
-
+        min_required_rows = 27 #max(self.long_ml_candle, self.short_ml_candle)
+        
         for i in range(len(df)):
             current_row = df.iloc[i]  # Get the current row
-
+            
             if i < min_required_rows - 1:
-                # Use default position (1 for short) for initial states
-                initial_is_short = 1
-                states.append((current_row['ask'], current_row['bid'], current_row['sma-compare'], initial_is_short))
-                positions.append(initial_is_short)
+                states.append((current_row['ask'], current_row['bid'], current_row['sma-compare']))
+                positions.append(0) # Default tracker to long
                 trade_positions.append(None)
                 continue
-
-            current_df = df.iloc[:i + 1].copy()
-
+            
+            current_df = df.iloc[:i+1].copy()
+            
             # Get predictions
+<<<<<<< Updated upstream
             long_next_action = getBidsig(is_short=0, ml_candle=self.long_ml_candle, dataframe=current_df).predict_action().get('action')
-            short_next_action = getBidsig(is_short=1, ml_candle=self.long_ml_candle, dataframe=current_df).predict_action().get('action')
+            short_next_action = getNlpsig(ml_candle=self.short_ml_candle, dataframe=current_df)
+            
+            # Determine position
+            if long_next_action == 'go_long':
+                is_short = 0  # Priority 1: Explicit Long signal
+            elif short_next_action == 'go_short':
+                is_short = 1  # Priority 2: Explicit Short signal
+            elif long_next_action == 'do_nothing':
+                is_short = 0  # Priority 3: Neutral bias is Long
+=======
+            long_next_action = getBidsig(
+                is_short=0,
+                ml_candle=self.long_ml_candle,
+                dataframe=current_df
+            ).predict_action().get('action')
+            short_next_action = getBidsig(
+                is_short=1,
+                ml_candle=self.short_ml_candle,
+                dataframe=current_df
+            ).predict_action().get('action')
             #short_next_action = getNlpsig(ml_candle=self.short_ml_candle, dataframe=current_df)
 
             # Determine position
-            # Modified logic: go long when long model says 'do_nothing' and short model does not exclusively say 'go_short'
-            #if long_next_action == 'do_nothing' and (short_next_action == 'go_short' or pd.isna(short_next_action) or short_next_action == 'do_nothing'):
-            if long_next_action == 'go_long':
+            # Pretrained behavior: both models may emit 'go_long';
+            # disambiguate by which directional model fired.
+            long_signal = long_next_action == 'go_long'
+            short_signal = short_next_action == 'go_long'
+            if long_signal and not short_signal:
                 is_short = 0  # long
-            #elif (long_next_action == 'go_long' or pd.isna(long_next_action)) and short_next_action == 'go_short':
-            elif long_next_action == 'go_long':
+            elif short_signal and not long_signal:
                 is_short = 1  # short
+>>>>>>> Stashed changes
             else:
-                is_short = positions[-1] if positions else 1  # hold previous position
+                is_short = positions[-1] if positions else 0
 
-            # Update base_state with the determined is_short
-            full_state = (current_row['ask'], current_row['bid'], current_row['sma-compare'], is_short)
-            states.append(full_state)
+            # Store 3D state for training
+            states.append((current_row['ask'], current_row['bid'], current_row['sma-compare']))
             positions.append(is_short)
-
-            # Track actual trade position based on the new interpretation
-            # Now 'do_nothing' means long, 'go_long' means short, everything else means no action
-            #if long_next_action == 'do_nothing':
+<<<<<<< Updated upstream
+            
+            # Track actual position
             if long_next_action == 'go_long':
                 trade_positions.append('long')
-            #elif short_next_action == 'go_short':
-            elif short_next_action == 'go_long':
+            elif short_next_action == 'go_short':
                 trade_positions.append('short')
             else:
                 trade_positions.append(None)
+        
+=======
 
+            # Keep trade_position consistent with the inferred directional state.
+            trade_positions.append('short' if is_short == 1 else 'long')
+
+>>>>>>> Stashed changes
         # Update position tracking
         self.position = 'short' if positions[-1] == 1 else 'long'
-
+        
         # Normalize prices
         prices = df['close'].tolist()
         prices = np.array(prices) / np.mean(prices)
-
+        
         logging.info(f"Prepared {len(states)} states, {len(prices)} prices, {len(trade_positions)} positions")
         return states, prices.tolist(), trade_positions
 
     def update_position(self, prediction: str, current_price: float):
         """Update position based on model prediction"""
-        # Now 'do_nothing' is the signal to go long, 'go_short' to go short, 'exit' to close
-        if (prediction == 'go_long') and self.position != 'long':
+        if prediction == 'go_long' and self.position != 'long':
             self.position = 'long'
             self.entry_price = current_price
             logging.info(f"Position changed to LONG at price {current_price}")
-        elif prediction == 'go_long' and self.position != 'short':
+        elif prediction == 'go_short' and self.position != 'short':
             self.position = 'short'
             self.entry_price = current_price
             logging.info(f"Position changed to SHORT at price {current_price}")
