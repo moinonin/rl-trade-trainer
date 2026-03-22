@@ -308,7 +308,7 @@ class BidAgentTrainer:
             if long_next_action == 'go_long':
                 is_short = 0  # long
             #elif (long_next_action == 'go_long' or pd.isna(long_next_action)) and short_next_action == 'go_short':
-            elif long_next_action == 'go_short':
+            elif long_next_action == 'go_long':
                 is_short = 1  # short
             else:
                 is_short = positions[-1] if positions else 1  # hold previous position
@@ -324,7 +324,7 @@ class BidAgentTrainer:
             if long_next_action == 'go_long':
                 trade_positions.append('long')
             #elif short_next_action == 'go_short':
-            elif short_next_action == 'go_short':
+            elif short_next_action == 'go_long':
                 trade_positions.append('short')
             else:
                 trade_positions.append(None)
@@ -346,7 +346,7 @@ class BidAgentTrainer:
             self.position = 'long'
             self.entry_price = current_price
             logging.info(f"Position changed to LONG at price {current_price}")
-        elif prediction == 'go_short' and self.position != 'short':
+        elif prediction == 'go_long' and self.position != 'short':
             self.position = 'short'
             self.entry_price = current_price
             logging.info(f"Position changed to SHORT at price {current_price}")
