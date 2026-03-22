@@ -5,8 +5,7 @@ proc:
 purge:
 	rm -rf user_data/optimization_results/*
 	rm core/rl/pkls/*
-<<<<<<< Updated upstream
-=======
+
 thresholds ?= 0.03
 base_dir ?= user_data/optimization_results/ # core/rl/pkls/ # 
 best_models_txt_file ?= best_models/optimization_results_20260320_093755.txt
@@ -58,4 +57,3 @@ best-model:
 	@echo "  python scripts/use_model.py --alpha $(RAW_ALPHA) --file \"$(FILE_PATH)\""
 all:
 	make filter && make best-model
->>>>>>> Stashed changes
