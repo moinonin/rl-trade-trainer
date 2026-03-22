@@ -530,6 +530,7 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
                 alpha_val = float(signed_alpha)
                 entropy_val = float(entropy)
                 ear_val = float(EAR)
+                matrix = n_mat
 
                 # --- Fix: For alpha and EAR, we want them NEGATIVE ---
                 # If they're positive, that's bad and should be penalized heavily
@@ -592,7 +593,8 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
                         'win_penalty': win_penalty,
                         'regularization': regularization_penalty,
                         '_raw_alpha': alpha_val,
-                        '_raw_EAR': ear_val
+                        '_raw_EAR': ear_val,
+                        'matrix': matrix
                     }
                 }
                 optimization_progress.append(progress_data)
@@ -639,12 +641,15 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
             result = gp_minimize(
                 getParams,
                 space,
-                noise=1e-5,
+                noise=0.0,                      # deterministic backtest
                 n_calls=100,
-                base_estimator="ET",
+                n_initial_points=20,            # increased exploration
+                base_estimator="ET",            # keep if mixed/categorical space; else "GP"
                 acq_func="EI",
-                acq_optimizer="sampling",
-                random_state=None,
+                acq_optimizer="auto",           # adapts to space type
+                random_state=42,
+                n_jobs=-1,                      # parallel execution
+                verbose=False,
                 callback=lambda res: print(f"{YELLOW}Best score so far: {GREEN if res.fun < 0 else RED}{res.fun:.6f}{END}") if len(res.x_iters) % print_frequency == 0 else None
             )
             
