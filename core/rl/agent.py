@@ -1,11 +1,12 @@
 import numpy as np
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Tuple, List, Optional
+from typing import Any, Dict, Tuple, List, Optional
 import pickle
 import logging
 import json
 import pandas as pd
+from datetime import datetime
 from core.metrics.nmatrix_hyperopt import calculate_nmatrix, save_optimization_result
 
 # ANSI color codes for colorful terminal output
@@ -24,12 +25,13 @@ class BidsAgent:
     
     def __init__(self, model_dir: Optional[str] = None):
         # Learning parameters
-        config_path = Path(__file__).resolve().parents[1] / "config" / "agent_config.json"
-        with open(config_path) as f:
+        self.config_path = Path(__file__).resolve().parents[1] / "config" / "agent_config.json"
+        with open(self.config_path) as f:
             d = json.load(f)
         self.learning_rate = d.get('learning_rate')
         self.discount_factor = d.get('discount_factor')
-        self.epsilon = d.get('epsilon_start')
+        self.epsilon_start = d.get('epsilon_start')
+        self.epsilon = self.epsilon_start
         self.min_epsilon = d.get('min_epsilon')
         self.decay_rate = d.get('decay_rate')
 
@@ -43,9 +45,53 @@ class BidsAgent:
 
     def _init_model_structures(self):
         """Initialize core data structures with proper typing"""
-        self.q_table = np.zeros((1024, len(self.ACTIONS)))  # Power-of-2 initial size
+        base_shape = (1024, len(self.ACTIONS))
+        # Double Q-learning tables (policy table is derived from these two).
+        self.q_table_a = np.zeros(base_shape)
+        self.q_table_b = np.zeros(base_shape)
+        self.q_table = np.zeros(base_shape)
         self.state_to_index: Dict[Tuple, int] = {}
         self.episode_transitions = []
+
+    def _canonicalize_state(self, state: Tuple) -> Tuple:
+        """Normalize state values to reduce sparsity in the tabular state space."""
+        if not isinstance(state, tuple):
+            state = tuple(state)
+
+        normalized: List[Any] = []
+        for value in state:
+            if isinstance(value, (np.floating, float)):
+                normalized.append(round(float(value), 4))
+            elif isinstance(value, (np.integer, int)):
+                normalized.append(int(value))
+            elif isinstance(value, (np.bool_, bool)):
+                normalized.append(int(value))
+            else:
+                normalized.append(value)
+        return tuple(normalized)
+
+    def _refresh_policy_table(self):
+        """Policy/read table used by action selection and diagnostics."""
+        self.q_table = self.q_table_a + self.q_table_b
+
+    def _ensure_capacity(self, min_size: int):
+        """Grow Q-tables without repeating values."""
+        if min_size <= self.q_table_a.shape[0]:
+            return
+
+        new_size = self.q_table_a.shape[0]
+        while new_size < min_size:
+            new_size *= 2
+
+        new_a = np.zeros((new_size, len(self.ACTIONS)))
+        new_b = np.zeros((new_size, len(self.ACTIONS)))
+        old_size = self.q_table_a.shape[0]
+        new_a[:old_size] = self.q_table_a
+        new_b[:old_size] = self.q_table_b
+        self.q_table_a = new_a
+        self.q_table_b = new_b
+        self._refresh_policy_table()
+        logging.info(f"{CYAN}Expanded Q-table to {new_size} states{END}")
 
     def decay_epsilon(self):
         """Proper epsilon decay mechanism"""
@@ -55,14 +101,22 @@ class BidsAgent:
         """Load model components safely"""
         try:
             pkls_dir = self.model_dir/'pkls'
-            # Load npy Q-table
-            #if (self.model_dir/'q_table.npy').exists():
-            #    self.q_table = np.load(self.model_dir/'q_table.npy')
+            q_table_a_path = pkls_dir/'q_table_a.pkl'
+            q_table_b_path = pkls_dir/'q_table_b.pkl'
+            q_table_path = pkls_dir/'q_table.pkl'
 
-            # Load npy Q-table
-            if (pkls_dir/'q_table.pkl').exists():
-                with open(pkls_dir/'q_table.pkl', 'rb') as f:
-                    self.q_table = pickle.load(f)
+            if q_table_a_path.exists() and q_table_b_path.exists():
+                with open(q_table_a_path, 'rb') as f:
+                    self.q_table_a = pickle.load(f)
+                with open(q_table_b_path, 'rb') as f:
+                    self.q_table_b = pickle.load(f)
+            elif q_table_path.exists():
+                # Backward compatibility: old single-table model.
+                with open(q_table_path, 'rb') as f:
+                    legacy_q = pickle.load(f)
+                self.q_table_a = legacy_q / 2.0
+                self.q_table_b = legacy_q / 2.0
+            self._refresh_policy_table()
 
             # Try to load state mappings from pkls directory first
             state_path_pkls = pkls_dir/'state_to_index.pkl'
@@ -75,7 +129,7 @@ class BidsAgent:
                     logging.info("Loaded state mappings from pkls directory")
             elif state_path_root.exists():
                 with open(state_path_root, 'rb') as f:
-                    self.state_to_index = pickle.load(f, allow_pickle=True)
+                    self.state_to_index = pickle.load(f)
                     logging.info("Loaded state mappings from root directory")
             
             logging.info(f"{GREEN}Loaded model with {len(self.state_to_index)} known states{END}")
@@ -98,7 +152,9 @@ class BidsAgent:
                 self._register_state(state)
             
             # Initialize with small positive values to encourage exploration
-            self.q_table = np.random.uniform(0, 0.1, self.q_table.shape)
+            self.q_table_a = np.random.uniform(0, 0.05, self.q_table_a.shape)
+            self.q_table_b = np.random.uniform(0, 0.05, self.q_table_b.shape)
+            self._refresh_policy_table()
             self.save_model()
             
             print(f"{GREEN}✓ Initialized new model with {len(self.state_to_index)} base states{END}")
@@ -109,27 +165,27 @@ class BidsAgent:
 
     def _register_state(self, state: Tuple) -> int:
         """Safely register new states with Q-table expansion"""
+        state = self._canonicalize_state(state)
         if state not in self.state_to_index:
             new_index = len(self.state_to_index)
-            
-            # Expand Q-table geometrically when needed
-            if new_index >= self.q_table.shape[0]:
-                new_size = self.q_table.shape[0] * 2
-                self.q_table = np.resize(self.q_table, (new_size, len(self.ACTIONS)))
-                logging.info(f"{CYAN}Expanded Q-table to {new_size} states{END}")
-            
+            self._ensure_capacity(new_index + 1)
             self.state_to_index[state] = new_index
         return self.state_to_index[state]
 
     def save_model(self):
         """Persist model state safely"""
         try:
-            # Save Q-table
-            with open(self.model_dir/'pkls/q_table.pkl', 'wb') as f:
-                pickle.dump(self.q_table, f)
-            # Create pkls directory if it doesn't exist
             pkls_dir = self.model_dir/'pkls'
-            pkls_dir.mkdir(exist_ok=True)
+            pkls_dir.mkdir(parents=True, exist_ok=True)
+            self._refresh_policy_table()
+
+            # Save read table plus Double-Q tables.
+            with open(pkls_dir/'q_table.pkl', 'wb') as f:
+                pickle.dump(self.q_table, f)
+            with open(pkls_dir/'q_table_a.pkl', 'wb') as f:
+                pickle.dump(self.q_table_a, f)
+            with open(pkls_dir/'q_table_b.pkl', 'wb') as f:
+                pickle.dump(self.q_table_b, f)
             
             # Save state mappings to pkls directory
             with open(pkls_dir/'state_to_index.pkl', 'wb') as f:
@@ -140,6 +196,9 @@ class BidsAgent:
             # Also save a backup in the model directory for backward compatibility
             with open(self.model_dir/'state_to_index.pkl', 'wb') as f:
                 pickle.dump(self.state_to_index, f)
+
+            # Persist active hyperparameters alongside the final model artifacts.
+            self._save_hyperparams_snapshot(pkls_dir)
             
             logging.info(f"{GREEN}Saved model with {len(self.state_to_index)} states{END}")
             
@@ -147,25 +206,112 @@ class BidsAgent:
             logging.error(f"{RED}Model save failed: {e}{END}")
             raise RuntimeError("Model persistence failed") from e
 
+    def _current_hyperparams(self) -> Dict[str, float]:
+        return {
+            "learning_rate": float(self.learning_rate),
+            "discount_factor": float(self.discount_factor),
+            "epsilon_start": float(self.epsilon_start),
+            "decay_rate": float(self.decay_rate),
+            "min_epsilon": float(self.min_epsilon),
+        }
+
+    def _save_hyperparams_snapshot(self, pkls_dir: Path):
+        """
+        Save latest hyperparameters in pkls and append periodic history snapshots.
+        """
+        payload = self._current_hyperparams()
+        payload["updated_at"] = datetime.now().isoformat()
+
+        latest_path = pkls_dir / "agent_config.json"
+        history_path = pkls_dir / "agent_config_history.jsonl"
+
+        with open(latest_path, "w") as f:
+            json.dump(payload, f, indent=2)
+
+        with open(history_path, "a") as f:
+            f.write(json.dumps(payload) + "\n")
+
+    def persist_params_if_best_raw_alpha(self, raw_alpha: Optional[float]) -> bool:
+        """
+        Persist agent params to config when a new lowest _raw_alpha is observed.
+        Returns True when an update is written.
+        """
+        if raw_alpha is None:
+            return False
+
+        pkls_dir = self.model_dir / "pkls"
+        pkls_dir.mkdir(parents=True, exist_ok=True)
+        tracker_path = pkls_dir / "best_raw_alpha.json"
+
+        previous_best = self._load_or_bootstrap_best_raw_alpha(pkls_dir, tracker_path)
+        candidate_alpha = float(raw_alpha)
+
+        if candidate_alpha >= previous_best:
+            return False
+
+        params_payload = self._current_hyperparams()
+        with open(self.config_path, "w") as f:
+            json.dump(params_payload, f, indent=2)
+
+        tracker_payload = {
+            "best_raw_alpha": candidate_alpha,
+            "updated_at": datetime.now().isoformat(),
+            "agent_config_path": str(self.config_path),
+            "params": params_payload,
+        }
+        with open(tracker_path, "w") as f:
+            json.dump(tracker_payload, f, indent=2)
+
+        self._save_hyperparams_snapshot(pkls_dir)
+        logging.info(f"{GREEN}Updated agent config from new best _raw_alpha: {candidate_alpha:.10f}{END}")
+        return True
+
+    def _load_or_bootstrap_best_raw_alpha(self, pkls_dir: Path, tracker_path: Path) -> float:
+        """Read tracked best raw alpha, or bootstrap it from existing optimization artifacts."""
+        previous_best = float("inf")
+        if tracker_path.exists():
+            try:
+                with open(tracker_path, "r") as f:
+                    previous_best = float(json.load(f).get("best_raw_alpha", previous_best))
+                return previous_best
+            except Exception:
+                previous_best = float("inf")
+
+        def walk_raw_alpha(obj) -> List[float]:
+            values: List[float] = []
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    if k == "_raw_alpha" and isinstance(v, (int, float)):
+                        values.append(float(v))
+                    values.extend(walk_raw_alpha(v))
+            elif isinstance(obj, list):
+                for item in obj:
+                    values.extend(walk_raw_alpha(item))
+            return values
+
+        for fp in pkls_dir.glob("optimization_results*.json"):
+            try:
+                with open(fp, "r") as f:
+                    data = json.load(f)
+                values = walk_raw_alpha(data)
+                if values:
+                    previous_best = min(previous_best, min(values))
+                else:
+                    alpha_val = data.get("alpha")
+                    if isinstance(alpha_val, (int, float)):
+                        previous_best = min(previous_best, float(alpha_val))
+            except Exception:
+                continue
+
+        return previous_best
+
     def get_state_index(self, state: Tuple) -> int:
         """Get index for state using tuple directly as key"""
-        if state not in self.state_to_index:
-            # Expand Q-table geometrically to avoid frequent resizing
-            new_size = max(len(self.state_to_index) * 2, 1)
-            if new_size > self.q_table.shape[0]:
-                self.q_table = np.resize(self.q_table, (new_size, len(self.ACTIONS)))
-                
-            self.state_to_index[state] = len(self.state_to_index)
-            
-        return self.state_to_index[state]
+        return self._register_state(state)
         
     def expand_q_table(self):
         """Double the size of Q-table when needed"""
-        new_size = len(self.q_table) * 2
-        new_q_table = np.zeros((new_size, 3))
-        new_q_table[:len(self.q_table)] = self.q_table
-        self.q_table = new_q_table
-        logging.info(f"{CYAN}Q-table expanded to size {new_size}{END}")
+        self._ensure_capacity(self.q_table.shape[0] * 2)
         
     def select_action(self, state: Tuple, epsilon: float = None) -> str:
         """Epsilon-greedy action selection with optional epsilon override"""
@@ -191,21 +337,24 @@ class BidsAgent:
         return self.select_action(short_state), 1
         
     def update(self, state: Tuple, action: str, reward: float, next_state: Tuple):
-        """Q-learning update with bounds checking"""
+        """Double Q-learning update with bounds checking"""
         try:
             action_idx = self.ACTIONS.index(action)
             state_idx = self._register_state(state)
             next_idx = self._register_state(next_state)
-            
-            current_q = self.q_table[state_idx, action_idx]
-            max_future_q = np.max(self.q_table[next_idx])
-            
-            # Q-learning formula
-            new_q = current_q + self.learning_rate * (
-                reward + self.discount_factor * max_future_q - current_q
-            )
-            
-            self.q_table[state_idx, action_idx] = new_q
+
+            if np.random.random() < 0.5:
+                next_action = int(np.argmax(self.q_table_a[next_idx]))
+                target = reward + self.discount_factor * self.q_table_b[next_idx, next_action]
+                current_q = self.q_table_a[state_idx, action_idx]
+                self.q_table_a[state_idx, action_idx] = current_q + self.learning_rate * (target - current_q)
+            else:
+                next_action = int(np.argmax(self.q_table_b[next_idx]))
+                target = reward + self.discount_factor * self.q_table_a[next_idx, next_action]
+                current_q = self.q_table_b[state_idx, action_idx]
+                self.q_table_b[state_idx, action_idx] = current_q + self.learning_rate * (target - current_q)
+
+            self.q_table[state_idx] = self.q_table_a[state_idx] + self.q_table_b[state_idx]
             
         except ValueError as e:
             logging.error(f"{RED}Invalid action '{action}' in update: {e}{END}")
@@ -228,7 +377,10 @@ class BidsAgent:
             pkls_dir.mkdir(exist_ok=True)
             
             # Save components
+            self._refresh_policy_table()
             np.save(model_dir/'q_table.npy', self.q_table)
+            np.save(model_dir/'q_table_a.npy', self.q_table_a)
+            np.save(model_dir/'q_table_b.npy', self.q_table_b)
             
             # Save state mappings to pkls directory
             with open(pkls_dir/'state_to_index.pkl', 'wb') as f:
@@ -241,6 +393,7 @@ class BidsAgent:
             # Save metadata with native types
             metadata = {
                 "q_table_shape": [int(dim) for dim in self.q_table.shape],
+                "algorithm": "double_q_learning",
                 "num_states": int(len(self.state_to_index)),
                 "learning_rate": float(self.learning_rate),
                 "discount_factor": float(self.discount_factor),
@@ -275,14 +428,22 @@ class BidsAgent:
                 pkls_dir.mkdir(parents=True, exist_ok=True)
                 
                 # Save to alpha directory's pkls subdirectory
+                self._refresh_policy_table()
                 with open(pkls_dir/'q_table.pkl', 'wb') as f:
                     pickle.dump(self.q_table, f)
+                with open(pkls_dir/'q_table_a.pkl', 'wb') as f:
+                    pickle.dump(self.q_table_a, f)
+                with open(pkls_dir/'q_table_b.pkl', 'wb') as f:
+                    pickle.dump(self.q_table_b, f)
                 
                 with open(pkls_dir/'state_to_index.pkl', 'wb') as f:
                     pickle.dump(self.state_to_index, f)
                 
                 with open(pkls_dir/'episode_transitions.pkl', 'wb') as f:
                     pickle.dump(self.episode_transitions, f)
+
+                # Mirror hyperparameters with each selected model directory.
+                self._save_hyperparams_snapshot(pkls_dir)
                 
                 # Copy optimization_results.json from alpha_dir to model's pkls directory if it exists
                 source_json_path = alpha_path / 'optimization_results.json'
@@ -308,10 +469,10 @@ class BidsAgent:
     def add_transition(self, state: Tuple, action: str, reward: float, next_state: Tuple):
         """Store a new transition"""
         transition = {
-            'state': state,
+            'state': self._canonicalize_state(state),
             'action': action,
             'reward': reward,
-            'next_state': next_state,
+            'next_state': self._canonicalize_state(next_state),
             'timestamp': pd.Timestamp.now().isoformat()
         }
         self.episode_transitions.append(transition)
@@ -331,6 +492,27 @@ class BidsAgent:
         transitions_count = len(self.episode_transitions)
         self.episode_transitions = []
         logging.info(f"{CYAN}Cleared {transitions_count} stored transitions{END}")
+
+    def replay(self, batch_size: int = 32, replay_updates: int = 1) -> int:
+        """Sample transitions and perform off-policy updates."""
+        num_transitions = len(self.episode_transitions)
+        if num_transitions == 0:
+            return 0
+
+        sample_size = min(batch_size, num_transitions)
+        updates_applied = 0
+        for _ in range(max(1, replay_updates)):
+            sample_indices = np.random.choice(num_transitions, size=sample_size, replace=False)
+            for idx in sample_indices:
+                transition = self.episode_transitions[int(idx)]
+                self.update(
+                    transition['state'],
+                    transition['action'],
+                    transition['reward'],
+                    transition['next_state']
+                )
+                updates_applied += 1
+        return updates_applied
 
     def find_optimal_model(self, 
                           include_candidates: bool = True, 

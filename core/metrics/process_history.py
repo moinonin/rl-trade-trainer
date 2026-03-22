@@ -89,6 +89,7 @@ def process_trading_history(csv_path: str, starting_balance: float) -> dict:
         # Skip optimization for reporting
         nmatrix_results = calculate_nmatrix(trades_df, min_date, max_date, starting_balance, optimize=False)
         pbar.update(1)
+<<<<<<< Updated upstream
         
         action_distribution = {
             'do_nothing': df['do_nothing'].mean() if 'do_nothing' in df.columns else 0,
@@ -96,6 +97,25 @@ def process_trading_history(csv_path: str, starting_balance: float) -> dict:
             'go_short': df['go_short'].mean() if 'go_short' in df.columns else 0
         }
         
+=======
+
+        # --- SECOND UPDATED SECTION: action distribution from action or one-hot columns ---
+        if 'action' in df.columns:
+            action_distribution = (
+                df['action']
+                .value_counts(normalize=True)
+                .reindex(['do_nothing', 'go_long', 'go_short'], fill_value=0.0)
+                .to_dict()
+            )
+        else:
+            action_distribution = {
+                'do_nothing': df['do_nothing'].mean() if 'do_nothing' in df.columns else 0,
+                'go_long': df['go_long'].mean() if 'go_long' in df.columns else 0,
+                'go_short': df['go_short'].mean() if 'go_short' in df.columns else 0
+            }
+        # ------------------------------------------------------------------------
+
+>>>>>>> Stashed changes
         print("\n📊 Compiling final report...")
         report = {
             'rewards': rewards,

@@ -24,6 +24,7 @@ class BidsTrainer:
     def __init__(self, agent: BidsAgent):
         self.agent = agent
         self.episode_count = 0
+        self.transaction_fee_pct = 0.001
         
     def calculate_reward(self, 
                         action: str,
@@ -33,17 +34,39 @@ class BidsTrainer:
         """Calculate reward with explicit position handling"""
         try:
             price_change = next_price - current_price
+            # Use return-based rewards so fee percentage is on the same scale.
+            price_return = (price_change / current_price) if current_price else 0.0
+            fee_cost = self.transaction_fee_pct
             
             # Use agent's action definitions for safety
             if action == self.agent.ACTIONS[0]:  # go_long
+<<<<<<< Updated upstream
                 return price_change if position_status == 0 else -abs(price_change)
             elif action == self.agent.ACTIONS[1]:  # go_short
                 return -price_change if position_status == 1 else -abs(price_change)
+=======
+                gross = price_return if position_status == 0 else -abs(price_return)
+                return gross - fee_cost
+            elif action == self.agent.ACTIONS[1]:  # go_short
+                gross = -price_return if position_status == 1 else -abs(price_return)
+                return gross - fee_cost
+>>>>>>> Stashed changes
             else:  # do_nothing
                 return 0.0
         except Exception as e:
             logger.error("Reward calculation error: %s", e, exc_info=True)
             return 0.0
+
+    def _infer_position_status(self, state: Tuple, fallback: int = 0) -> int:
+        """Infer per-step position from state tuple (..., is_short)."""
+        try:
+            if isinstance(state, tuple) and len(state) > 0:
+                raw = state[-1]
+                if raw in (0, 1):
+                    return int(raw)
+            return int(fallback)
+        except Exception:
+            return int(fallback)
             
     def train_step(self, 
                    current_state: Tuple,
@@ -53,7 +76,7 @@ class BidsTrainer:
                    position_status: int) -> Dict:
         """Enhanced training step with validation"""
         result = {
-            "action": self.agent.ACTIONS[0],  # do_nothing
+            "action": self.agent.ACTIONS[2],  # do_nothing
             "reward": 0.0,
             "state": current_state,
             "next_state": next_state
@@ -61,7 +84,8 @@ class BidsTrainer:
         
         try:
             action = self.agent.select_action(current_state)
-            reward = self.calculate_reward(action, next_price, current_price, position_status)
+            step_position_status = self._infer_position_status(current_state, fallback=position_status)
+            reward = self.calculate_reward(action, next_price, current_price, step_position_status)
 
             # Validate state transition before updating
             if not self._valid_state_transition(current_state, next_state):
@@ -69,7 +93,8 @@ class BidsTrainer:
                 return result
                 
             self.agent.update(current_state, action, reward, next_state)
-            #np.array(current_state, action, reward, next_state, dtype=object) = episode_transitions
+            self.agent.add_transition(current_state, action, reward, next_state)
+            self.agent.replay(batch_size=32, replay_updates=1)
             
             # Update result with actual values
             result.update({
@@ -191,9 +216,9 @@ class BidsTrainer:
                         print(f"{BOLD}Recent Actions:{END}")
                         for action, count in interval_metrics['action_counts'].items():
                             action_color = CYAN
-                            if action == self.agent.ACTIONS[1]:  # go_long
+                            if action == self.agent.ACTIONS[0]:  # go_long
                                 action_color = GREEN
-                            elif action == self.agent.ACTIONS[2]:  # go_short
+                            elif action == self.agent.ACTIONS[1]:  # go_short
                                 action_color = RED
                             
                             percentage = count / sum(interval_metrics['action_counts'].values()) * 100 if sum(interval_metrics['action_counts'].values()) > 0 else 0
@@ -234,10 +259,12 @@ class BidsTrainer:
                                 print(f"{BLUE}[{END}{bar}{BLUE}]{END} {BOLD}{progress_pct:.1f}%{END}")
                         
                         last_save_step = i
+
+                    # Decay epsilon each step to avoid long high-randomness phases.
+                    self.agent.decay_epsilon()
             
             # Post-episode processing
             self.episode_count += 1
-            self.agent.decay_epsilon()
             
             # Always save at the end of the episode if we haven't saved recently
             if len(states) - 1 - last_save_step > save_model_interval // 2:
@@ -281,9 +308,9 @@ class BidsTrainer:
                     for action, count in action_counts.items():
                         # Choose color based on action
                         action_color = CYAN
-                        if action == self.agent.ACTIONS[1]:  # go_long
+                        if action == self.agent.ACTIONS[0]:  # go_long
                             action_color = GREEN
-                        elif action == self.agent.ACTIONS[2]:  # go_short
+                        elif action == self.agent.ACTIONS[1]:  # go_short
                             action_color = RED
                         
                         # Create visual bar

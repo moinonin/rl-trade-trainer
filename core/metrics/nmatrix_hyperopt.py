@@ -443,7 +443,10 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
 
         target_win_rate = find_min_win_rate(daily_returns=daily_returns)
         entropy = cal_entropy()
-        EAR = signed_alpha/entropy
+        if not np.isfinite(entropy):
+            entropy = 1e6
+        entropy_denom = entropy if abs(entropy) > 1e-12 else 1e-12
+        EAR = signed_alpha / entropy_denom
         target_entropy = 0
         target_EAR = target_alpha/entropy #-0.5
 
@@ -521,6 +524,107 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
                 print(f"{RED}Error in getParams: {e}{END}")
                 return 100  # Changed from -100 to 100 to indicate a bad result
 
+<<<<<<< Updated upstream
+=======
+                def safe_float(value, default):
+                    try:
+                        numeric = float(value)
+                        return numeric if np.isfinite(numeric) else float(default)
+                    except Exception:
+                        return float(default)
+
+                # Get raw values (force finite numbers for skopt stability)
+                mse_val = safe_float(mse_cofactors, 1e6)
+                cofactors_val = safe_float(cofactors_norm, 1e6)
+                alpha_val = safe_float(signed_alpha, 1e3)
+                entropy_val = safe_float(entropy, 1e6)
+                ear_val = safe_float(EAR, 1e3)
+                matrix = n_mat
+
+                # --- Fix: For alpha and EAR, we want them NEGATIVE ---
+                # If they're positive, that's bad and should be penalized heavily
+                if alpha_val > 0:
+                    # Positive alpha is terrible - square it to penalize heavily
+                    alpha_contrib = sigma * (alpha_val ** 2 * 1000)
+                else:
+                    # Negative alpha is good - use it directly
+                    alpha_contrib = sigma * alpha_val
+                    
+                if ear_val > 0:
+                    # Positive EAR is terrible
+                    ear_contrib = gamma * (ear_val ** 2 * 1000)
+                else:
+                    # Negative EAR is good
+                    ear_contrib = gamma * ear_val
+
+                # For MSE and cofactors, we want them near zero (always positive)
+                # So we use them directly - smaller is better
+                cofactors_contrib = zeta * cofactors_val
+                mse_contrib = theta * mse_val
+
+                # For entropy, lower is better (always positive)
+                entropy_contrib = alpha * entropy_val
+
+                # Weighted sum
+                objective_score = (
+                    cofactors_contrib +
+                    mse_contrib +
+                    alpha_contrib +
+                    entropy_contrib +
+                    ear_contrib
+                )
+
+                # --- Win penalty ---
+                if target_win_rate is None:
+                    default_min_win_rate = 0.5
+                    win_penalty = 1000.0 * max(0.0, default_min_win_rate - win_rate)
+                else:
+                    win_penalty_weight = 1000.0
+                    win_penalty = win_penalty_weight * max(0.0, target_win_rate - win_rate)
+
+                # L1 regularization
+                regularization_penalty = lambda_param * sum(abs(p) for p in params)
+
+                # Final score
+                nmatrix = objective_score + regularization_penalty + win_penalty
+                if not np.isfinite(nmatrix):
+                    nmatrix = 1e9
+
+                # Record contributions
+                progress_data = {
+                    'iteration': current_iteration,
+                    'params': params,
+                    'score': nmatrix,
+                    'contributions': {
+                        'cofactors': cofactors_contrib,
+                        'mse': mse_contrib,
+                        'alpha': alpha_contrib,
+                        'entropy': entropy_contrib,
+                        'EAR': ear_contrib,
+                        'win_penalty': win_penalty,
+                        'regularization': regularization_penalty,
+                        '_raw_alpha': alpha_val,
+                        '_raw_EAR': ear_val,
+                        'matrix': matrix
+                    }
+                }
+                optimization_progress.append(progress_data)
+
+                if current_iteration % print_frequency == 0:
+                    score_color = GREEN if nmatrix < 0 else (YELLOW if nmatrix < 0.5 else RED)
+                    alpha_color = GREEN if alpha_val < 0 else RED
+                    ear_color = GREEN if ear_val < 0 else RED
+                    print(f"{CYAN}Iteration {current_iteration}:{END} Score = {score_color}{nmatrix:.6f}{END}")
+                    print(f"  Alpha: {alpha_color}{alpha_val:.6e}{END}, EAR: {ear_color}{ear_val:.6e}{END}")
+
+                return float(nmatrix)
+
+            except Exception as e:
+                print(f"{RED}Error in getParams: {e}{END}")
+                import traceback
+                traceback.print_exc()
+                return 100.0
+>>>>>>> Stashed changes
         # Define search space
         space = [
             Real(-1.0, 1.0, name='zeta'),
@@ -538,6 +642,7 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
             print(f"{BOLD}{CYAN}🚀 Starting optimization with {len(trades)} trades{END}")
             print(f"{BLUE}{'═' * 60}{END}")
             
+<<<<<<< Updated upstream
             for run_idx in range(5):
                 # Print run header with colors
                 print(f"\n{BLUE}{'═' * 50}{END}")
@@ -562,6 +667,35 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
                 if best_result is None or result.fun < best_result.fun:
                     best_result = result
                     print(f"{GREEN}✨ New best result found in run {run_idx+1}: {result.fun:.6f}{END}")
+=======
+            discarded_params.clear()
+            iteration_counter[0] = 0  # Reset counter for each run
+            
+            try:
+                result = gp_minimize(
+                    getParams,
+                    space,
+                    noise=0.0,                      # deterministic backtest
+                    n_calls=100,
+                    n_initial_points=20,            # increased exploration
+                    base_estimator="ET",            # keep if mixed/categorical space; else "GP"
+                    acq_func="EI",
+                    acq_optimizer="auto",           # adapts to space type
+                    random_state=42,
+                    n_jobs=-1,                      # parallel execution
+                    verbose=False,
+                    callback=lambda res: print(f"{YELLOW}Best score so far: {GREEN if res.fun < 0 else RED}{res.fun:.6f}{END}") if len(res.x_iters) % print_frequency == 0 else None
+                )
+            except ValueError as ve:
+                if "Input y contains NaN" in str(ve):
+                    print(f"{YELLOW}Run {run_idx+1}: encountered NaN objective values; skipping this run.{END}")
+                    continue
+                raise
+            
+            if best_result is None or result.fun < best_result.fun:
+                best_result = result
+                print(f"{GREEN}✨ New best result found in run {run_idx+1}: {result.fun:.6f}{END}")
+>>>>>>> Stashed changes
 
                 metrics = {
                     'win_rate': win_rate,
@@ -755,6 +889,126 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
                 'intermediate_saves': []
             }
             
+<<<<<<< Updated upstream
+=======
+            # Save intermediate results if requested
+            if save_intermediate and (run_idx+1) % intermediate_save_frequency == 0:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                intermediate_dir = f"user_data/optimization_results/intermediate_run_{run_idx+1}_{timestamp}"
+                save_dir, json_path = save_optimization_result(signed_alpha, result, metrics, base_path=intermediate_dir)
+                if agent is not None and save_dir:
+                    try:
+                        agent.save_model_with_metrics(save_dir)
+                    except Exception as save_err:
+                        logging.warning(f"Failed to save model PKLs to intermediate dir {save_dir}: {save_err}")
+                if save_dir:
+                    intermediate_saves.append((save_dir, json_path))
+                    print(f"{CYAN}💾 Saved intermediate results to:{END} {YELLOW}{save_dir}{END}")
+
+            save_dir = None
+            json_path = None
+            # Use HyperoptHelper for best metrics
+            helper = HyperoptHelper()
+            best_metrics = helper.initialize_best_metrics_from_latest()
+            best_alpha = best_metrics.get('best_alpha', helper.initial_alpha)
+            best_burke = best_metrics.get('best_burke', helper.initial_burke)
+            best_entropy = best_metrics.get('best_entropy', helper.initial_entropy)
+
+            if metrics:
+                # Always print current metrics summary with colors
+                # Determine colors and improvement indicators
+                alpha_improved = signed_alpha < best_alpha
+                current_burke = metrics.get('burke', -1)
+                current_entropy = metrics.get('entropy', 100)
+                burke_improved = current_burke > best_burke
+                entropy_improved = current_entropy < best_entropy
+                
+                alpha_color = GREEN if alpha_improved else RED
+                burke_color = GREEN if burke_improved else RED
+                entropy_color = GREEN if entropy_improved else RED
+                
+                alpha_indicator = "▼" if alpha_improved else "▲"
+                burke_indicator = "▲" if burke_improved else "▼"
+                entropy_indicator = "▼" if entropy_improved else "▲"
+                
+                print(f"\n{BLUE}{'═' * 60}{END}")
+                print(f"{BOLD}{CYAN}📊 Current Metrics Summary:{END}")
+                print(f"{BLUE}{'─' * 60}{END}")
+                print(f"{BOLD}Alpha:{END}   {alpha_color}{signed_alpha:.6f} {alpha_indicator}{END} (Best: {YELLOW}{best_alpha:.6f}{END})")
+                print(f"{BOLD}Burke:{END}   {burke_color}{current_burke:.6f} {burke_indicator}{END} (Best: {YELLOW}{best_burke:.6f}{END})")
+                print(f"{BOLD}Entropy:{END} {entropy_color}{current_entropy:.6f} {entropy_indicator}{END} (Best: {YELLOW}{best_entropy:.6f}{END})")
+
+                # Check if this is a best model (meets all criteria)
+                if (signed_alpha < best_alpha and
+                    current_burke > best_burke and
+                    current_entropy < best_entropy):
+                    save_dir, json_path = save_optimization_result(signed_alpha, metrics["best_result"], metrics)
+                    if agent is not None and save_dir:
+                        try:
+                            agent.save_model_with_metrics(save_dir)
+                        except Exception as save_err:
+                            logging.warning(f"Failed to save model PKLs to best dir {save_dir}: {save_err}")
+                    print(f"\n{BLUE}{'═' * 60}{END}")
+                    print(f"{BOLD}{GREEN}🏆 BEST MODEL! All criteria met!{END}")
+                    print(f"{GREEN}✓ Alpha: {signed_alpha:.6f} < {best_alpha:.6f}{END}")
+                    print(f"{GREEN}✓ Burke: {current_burke:.6f} > {best_burke:.6f}{END}")
+                    print(f"{GREEN}✓ Entropy: {current_entropy:.6f} < {best_entropy:.6f}{END}")
+                    print(f"{BOLD}{CYAN}📂 Saved results to:{END} {YELLOW}{save_dir}{END}")
+                    try:
+                        helper.save_backup_metrics()
+                    except Exception as e:
+                        raise Exception(f"Error saving backup metrics: {e}")
+                    
+                    # Return with save_dir so the caller knows where to save the model
+                    return {
+                        'signed_alpha': signed_alpha,
+                        'optimization_result': metrics["best_result"],
+                        'metrics': metrics,
+                        'nmatrix_score': metrics["best_result"].fun if metrics["best_result"] else 0,
+                        'save_dir': save_dir,
+                        'json_path': json_path,
+                        'intermediate_saves': intermediate_saves
+                    }
+                # Check if this is a candidate model (meets at least one criterion)
+                elif (signed_alpha < best_alpha or
+                      current_burke > best_burke or
+                      current_entropy < best_entropy):
+                    # Save as a candidate model
+                    candidate_dir = f"user_data/optimization_results/candidate_alpha_{abs(signed_alpha):.4f}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                    save_dir, json_path = save_optimization_result(signed_alpha, metrics["best_result"], metrics, base_path=candidate_dir)
+                    if agent is not None and save_dir:
+                        try:
+                            agent.save_model_with_metrics(save_dir)
+                        except Exception as save_err:
+                            logging.warning(f"Failed to save model PKLs to candidate dir {save_dir}: {save_err}")
+                    
+                    print(f"\n{BLUE}{'═' * 60}{END}")
+                    print(f"{BOLD}{YELLOW}⭐ CANDIDATE MODEL! Some criteria met:{END}")
+                    
+                    # Show which criteria were met
+                    if signed_alpha < best_alpha:
+                        print(f"{GREEN}✓ Alpha: {signed_alpha:.6f} < {best_alpha:.6f}{END}")
+                    else:
+                        print(f"{RED}✗ Alpha: {signed_alpha:.6f} >= {best_alpha:.6f}{END}")
+                        
+                    if current_burke > best_burke:
+                        print(f"{GREEN}✓ Burke: {current_burke:.6f} > {best_burke:.6f}{END}")
+                    else:
+                        print(f"{RED}✗ Burke: {current_burke:.6f} <= {best_burke:.6f}{END}")
+                        
+                    if current_entropy < best_entropy:
+                        print(f"{GREEN}✓ Entropy: {current_entropy:.6f} < {best_entropy:.6f}{END}")
+                    else:
+                        print(f"{RED}✗ Entropy: {current_entropy:.6f} >= {best_entropy:.6f}{END}")
+                    
+                    print(f"{BOLD}{CYAN}📂 Saved results to:{END} {YELLOW}{save_dir}{END}")
+                    
+                    if save_dir:
+                        intermediate_saves.append((save_dir, json_path))
+                else:
+                    print(f"\n{RED}❌ Results not saved - did not meet any improvement criteria.{END}")
+                    
+>>>>>>> Stashed changes
         # If we've gone through all runs without finding a best model,
         # return the best result we found along with intermediate saves
         if best_result is not None:

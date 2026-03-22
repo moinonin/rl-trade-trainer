@@ -63,6 +63,23 @@ class BidAgentTrainer:
         # Best model tracking
         self.best_metrics = {"entropy": 0.9, "burke": 0.00, "alpha": 1.0}
         self.best_model = None
+
+    def _extract_min_raw_alpha(self, obj) -> Optional[float]:
+        """Recursively find the minimum numeric '_raw_alpha' in nested metrics payloads."""
+        values = []
+
+        def _walk(x):
+            if isinstance(x, dict):
+                for k, v in x.items():
+                    if k == "_raw_alpha" and isinstance(v, (int, float)):
+                        values.append(float(v))
+                    _walk(v)
+            elif isinstance(x, list):
+                for item in x:
+                    _walk(item)
+
+        _walk(obj)
+        return min(values) if values else None
         
     def run_hyperopt(self, 
                     episode_df: pd.DataFrame, 
@@ -153,6 +170,9 @@ class BidAgentTrainer:
                 signed_alpha = result.get('signed_alpha', 0)
                 save_dir = result.get('save_dir')
                 intermediate_saves = result.get('intermediate_saves', [])
+                min_raw_alpha = self._extract_min_raw_alpha(metrics)
+                if min_raw_alpha is None and isinstance(signed_alpha, (int, float)):
+                    min_raw_alpha = float(signed_alpha)
                 
                 print(f"\n{'='*50}")
                 print(f"Hyperopt Results:")
@@ -181,10 +201,16 @@ class BidAgentTrainer:
                     for i, save_path in enumerate(intermediate_saves):
                         print(f"{i+1}. {save_path}")
                         self.agent.save_model_with_metrics(save_path)
+
+                if min_raw_alpha is not None:
+                    updated = self.agent.persist_params_if_best_raw_alpha(min_raw_alpha)
+                    if updated:
+                        print(f"{self.GREEN}Updated agent params from new best _raw_alpha: {min_raw_alpha:.10f}{self.END}")
                 
                 return {
                     'nmatrix_score': result.get('nmatrix_score', 0),
                     'signed_alpha': signed_alpha,
+                    'min_raw_alpha': min_raw_alpha,
                     'trades_analyzed': len(trades_df),
                     'timestamp': pd.Timestamp.now().isoformat(),
                     'metrics': metrics,
@@ -312,6 +338,7 @@ class BidAgentTrainer:
             current_df = df.iloc[:i+1].copy()
             
             # Get predictions
+<<<<<<< Updated upstream
             long_next_action = getBidsig(is_short=0, ml_candle=self.long_ml_candle, dataframe=current_df).predict_action().get('action')
             short_next_action = getNlpsig(ml_candle=self.short_ml_candle, dataframe=current_df)
             
@@ -322,12 +349,36 @@ class BidAgentTrainer:
                 is_short = 1  # Priority 2: Explicit Short signal
             elif long_next_action == 'do_nothing':
                 is_short = 0  # Priority 3: Neutral bias is Long
+=======
+            long_next_action = getBidsig(
+                is_short=0,
+                ml_candle=self.long_ml_candle,
+                dataframe=current_df
+            ).predict_action().get('action')
+            short_next_action = getBidsig(
+                is_short=1,
+                ml_candle=self.short_ml_candle,
+                dataframe=current_df
+            ).predict_action().get('action')
+            #short_next_action = getNlpsig(ml_candle=self.short_ml_candle, dataframe=current_df)
+
+            # Determine position
+            # Pretrained behavior: both models may emit 'go_long';
+            # disambiguate by which directional model fired.
+            long_signal = long_next_action == 'go_long'
+            short_signal = short_next_action == 'go_long'
+            if long_signal and not short_signal:
+                is_short = 0  # long
+            elif short_signal and not long_signal:
+                is_short = 1  # short
+>>>>>>> Stashed changes
             else:
                 is_short = positions[-1] if positions else 0
 
             # Store 3D state for training
             states.append((current_row['ask'], current_row['bid'], current_row['sma-compare']))
             positions.append(is_short)
+<<<<<<< Updated upstream
             
             # Track actual position
             if long_next_action == 'go_long':
@@ -337,6 +388,12 @@ class BidAgentTrainer:
             else:
                 trade_positions.append(None)
         
+=======
+
+            # Keep trade_position consistent with the inferred directional state.
+            trade_positions.append('short' if is_short == 1 else 'long')
+
+>>>>>>> Stashed changes
         # Update position tracking
         self.position = 'short' if positions[-1] == 1 else 'long'
         
