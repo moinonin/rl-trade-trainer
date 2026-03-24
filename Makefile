@@ -8,7 +8,7 @@ purge:
 	rm -rf user_data/optimization_results/*
 	rm core/rl/pkls/*
 
-thresholds ?= 70000
+thresholds ?= 0.04
 base_dir ?= user_data/optimization_results/ # core/rl/pkls/ # 
 best_models_txt_file ?= best_models/optimization_results_20260320_093755.txt
 best_models_json_file ?= best_models/optimization_results_20260320_093755.json

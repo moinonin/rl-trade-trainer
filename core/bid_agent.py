@@ -305,7 +305,7 @@ class BidAgentTrainer:
             # Determine position
             # Modified logic: go long when long model says 'do_nothing' and short model does not exclusively say 'go_short'
             #if long_next_action == 'do_nothing' and (short_next_action == 'go_short' or pd.isna(short_next_action) or short_next_action == 'do_nothing'):
-            if long_next_action == 'go_long':
+            if long_next_action != 'go_short':
                 is_short = 0  # long
             #elif (long_next_action == 'go_long' or pd.isna(long_next_action)) and short_next_action == 'go_short':
             elif long_next_action == 'go_long':
@@ -321,7 +321,7 @@ class BidAgentTrainer:
             # Track actual trade position based on the new interpretation
             # Now 'do_nothing' means long, 'go_long' means short, everything else means no action
             #if long_next_action == 'do_nothing':
-            if long_next_action == 'go_long':
+            if long_next_action != 'go_short':
                 trade_positions.append('long')
             #elif short_next_action == 'go_short':
             elif short_next_action == 'go_long':
@@ -342,7 +342,7 @@ class BidAgentTrainer:
     def update_position(self, prediction: str, current_price: float):
         """Update position based on model prediction"""
         # Now 'do_nothing' is the signal to go long, 'go_short' to go short, 'exit' to close
-        if (prediction == 'go_long') and self.position != 'long':
+        if (prediction != 'go_short') and self.position != 'long':
             self.position = 'long'
             self.entry_price = current_price
             logging.info(f"Position changed to LONG at price {current_price}")
