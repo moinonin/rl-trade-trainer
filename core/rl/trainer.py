@@ -24,6 +24,7 @@ class BidsTrainer:
     def __init__(self, agent: BidsAgent):
         self.agent = agent
         self.episode_count = 0
+        self.fee_cost = 0.001
         
     def calculate_reward(self, 
                         action: str,
@@ -33,12 +34,16 @@ class BidsTrainer:
         """Calculate reward with explicit position handling"""
         try:
             price_change = next_price - current_price
-            
+            price_return = (price_change/current_price) if current_price else 0
             # Use agent's action definitions for safety
-            if action == self.agent.ACTIONS[1]:  # go_long
-                return price_change if position_status == 0 else -abs(price_change)
-            elif action == self.agent.ACTIONS[2]:  # go_short
-                return -price_change if position_status == 1 else -abs(price_change)
+            if action == self.agent.ACTIONS[0]:  # go_long
+                gross = price_return if position_status == 0 else -abs(price_return)
+                #return price_change if position_status == 0 else -abs(price_change)
+                return gross - self.fee_cost
+            elif action == self.agent.ACTIONS[1]:  # go_short
+                gross = -price_return if position_status == 1 else -abs(price_return)
+                #return -price_change if position_status == 1 else -abs(price_change)
+                return gross - self.fee_cost
             else:  # do_nothing
                 return 0.0
         except Exception as e:
