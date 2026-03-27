@@ -63,6 +63,61 @@ class BidAgentTrainer:
         # Best model tracking
         self.best_metrics = {"entropy": 0.9, "burke": 0.00, "alpha": 1.0}
         self.best_model = None
+
+    def resolve_pretrained_direction(self,
+                                     long_signal: Optional[str],
+                                     short_signal: Optional[str],
+                                     previous_is_short: int = 1) -> Tuple[int, Optional[str]]:
+        """
+        Translate raw pretrained outputs into one canonical direction.
+
+        Current contract:
+        - long-side pretrained `do_nothing` means long bias
+        - short-side pretrained `go_long` means short bias
+        - ambiguous/no-signal falls back to previous direction
+        """
+        is_long_signal = long_signal == 'do_nothing' and short_signal != 'go_long'
+        is_short_signal = short_signal == 'go_long' and long_signal != 'do_nothing'
+
+        if is_long_signal:
+            return 0, 'long'
+        if is_short_signal:
+            return 1, 'short'
+        return previous_is_short, None
+
+    def resolve_position_signal(self, prediction: Optional[str]) -> Optional[str]:
+        """
+        Translate a raw model signal into a canonical position action.
+
+        Current contract:
+        - `do_nothing` means open/keep long
+        - `go_long` means open/keep short
+        - `exit` means flatten
+        """
+        if prediction == 'do_nothing':
+            return 'long'
+        if prediction == 'go_long':
+            return 'short'
+        if prediction == 'exit':
+            return 'exit'
+        return None
+
+    def get_pretrained_action(self,
+                              is_short: int,
+                              dataframe: pd.DataFrame) -> Optional[str]:
+        """
+        Fetch the raw action from the side-specific pretrained model.
+
+        Keep this as the single call site for pretrained bids inference so
+        model-specific candle windows and output shape changes stay isolated.
+        """
+        ml_candle = self.short_ml_candle if is_short else self.long_ml_candle
+        result = getBidsig(
+            is_short=is_short,
+            ml_candle=ml_candle,
+            dataframe=dataframe,
+        ).predict_action()
+        return result.get('action') if isinstance(result, dict) else None
         
     def run_hyperopt(self, 
                     episode_df: pd.DataFrame, 
@@ -298,36 +353,28 @@ class BidAgentTrainer:
             current_df = df.iloc[:i + 1].copy()
 
             # Get predictions
-            long_next_action = getBidsig(is_short=0, ml_candle=self.long_ml_candle, dataframe=current_df).predict_action().get('action')
-            short_next_action = getBidsig(is_short=1, ml_candle=self.long_ml_candle, dataframe=current_df).predict_action().get('action')
+            long_next_action = self.get_pretrained_action(
+                is_short=0,
+                dataframe=current_df,
+            )
+            short_next_action = self.get_pretrained_action(
+                is_short=1,
+                dataframe=current_df,
+            )
             #short_next_action = getNlpsig(ml_candle=self.short_ml_candle, dataframe=current_df)
 
-            # Determine position
-            # Modified logic: go long when long model says 'do_nothing' and short model does not exclusively say 'go_short'
-            #if long_next_action == 'do_nothing' and (short_next_action == 'go_short' or pd.isna(short_next_action) or short_next_action == 'do_nothing'):
-            if long_next_action == 'do_nothing' and short_next_action != 'go_long':
-                is_short = 0  # long
-            #elif (long_next_action == 'go_long' or pd.isna(long_next_action)) and short_next_action == 'go_short':
-            elif short_next_action == 'go_long' and long_next_action != 'do_nothing':
-                is_short = 1  # short
-            else:
-                is_short = positions[-1] if positions else 1  # hold previous position
+            is_short, trade_position = self.resolve_pretrained_direction(
+                long_signal=long_next_action,
+                short_signal=short_next_action,
+                previous_is_short=positions[-1] if positions else 1,
+            )
 
             # Update base_state with the determined is_short
             full_state = (current_row['ask'], current_row['bid'], current_row['sma-compare'], is_short)
             states.append(full_state)
             positions.append(is_short)
 
-            # Track actual trade position based on the new interpretation
-            # Now 'do_nothing' means long, 'go_long' means short, everything else means no action
-            #if long_next_action == 'do_nothing':
-            if long_next_action == 'do_nothing' and short_next_action != 'go_long':
-                trade_positions.append('long')
-            #elif short_next_action == 'go_short':
-            elif short_next_action == 'go_long' and long_next_action != 'do_nothing':
-                trade_positions.append('short')
-            else:
-                trade_positions.append(None)
+            trade_positions.append(trade_position)
 
         # Update position tracking
         self.position = 'short' if positions[-1] == 1 else 'long'
@@ -341,16 +388,17 @@ class BidAgentTrainer:
 
     def update_position(self, prediction: str, current_price: float):
         """Update position based on model prediction"""
-        # Now 'do_nothing' is the signal to go long, 'go_short' to go short, 'exit' to close
-        if (prediction == 'do_nothing') and self.position != 'long':
+        target_position = self.resolve_position_signal(prediction)
+
+        if target_position == 'long' and self.position != 'long':
             self.position = 'long'
             self.entry_price = current_price
             logging.info(f"Position changed to LONG at price {current_price}")
-        elif (prediction == 'go_long') and self.position != 'short':
+        elif target_position == 'short' and self.position != 'short':
             self.position = 'short'
             self.entry_price = current_price
             logging.info(f"Position changed to SHORT at price {current_price}")
-        elif prediction == 'exit' and self.position is not None:
+        elif target_position == 'exit' and self.position is not None:
             logging.info(f"Exiting {self.position} position from {self.entry_price}")
             self.position = None
             self.entry_price = 0
