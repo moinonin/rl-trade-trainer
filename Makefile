@@ -26,31 +26,44 @@ find-min-score-all:
 		sort -n | \
 		head -n 1
 
+# Get global minimum score
+find-min-score-all:
+	@echo "Minimum score across all optimization results:"
+	@grep -Eo '"score":[[:space:]]*[-0-9.e+]+' $(best_models_txt_file) | \
+		awk -F: '{gsub(/[[:space:]]/, "", $$2); print $$2}' | \
+		sort -n | \
+		head -n 1
+
 # Find details for the global minimum score
 find-min-details:
 	@if [ ! -s "$(best_models_txt_file)" ]; then \
 		echo "Error: missing or empty $(best_models_txt_file). Run 'make filter' first."; \
 		exit 1; \
 	fi
-	$(eval MIN_SCORE := $(shell grep -Eo '"score":[[:space:]]*[-0-9.e+]+' $(best_models_txt_file) | awk -F: '{gsub(/[[:space:]]/, "", $$2); print $$2}' | sort -n | head -n 1))
-	@if [ -z "$(MIN_SCORE)" ]; then \
+	@echo "========================================="; \
+	MIN_SCORE=$$(grep -Eo '"score":[[:space:]]*[-0-9.e+]+' "$(best_models_txt_file)" | \
+		awk -F: '{gsub(/[[:space:]]/, "", $$2); print $$2}' | sort -n | head -n 1); \
+	if [ -z "$$MIN_SCORE" ]; then \
 		echo "Error: could not extract MIN_SCORE from $(best_models_txt_file)."; \
 		exit 1; \
-	fi
-	$(eval RAW_ALPHA := $(shell awk -v score="$(MIN_SCORE)" 'BEGIN{RS=""; FS="\n"} $$0 ~ score {for(i=1;i<=NF;i++) if($$i ~ /_raw_alpha/) {split($$i,a,":"); gsub(/[ ,}]/, "", a[2]); print a[2]; exit}}' $(best_models_txt_file)))
-	$(eval FILE_PATH := $(shell awk -v score="$(MIN_SCORE)" 'BEGIN{RS=""; FS="\n"} $$0 ~ score {for(i=1;i<=NF;i++) if($$i ~ /^File:/) {gsub(/^File: /, "", $$i); print $$i; exit}}' $(best_models_txt_file)))
-	
-	@echo "========================================="
-	@echo "Global Minimum Score: $(MIN_SCORE)"
-	@echo "Raw Alpha: $(RAW_ALPHA)"
-	@echo "File: $(FILE_PATH)"
-	@echo "========================================="
+	fi; \
+	RAW_ALPHA=$$(awk -v score="$$MIN_SCORE" 'BEGIN{RS=""; FS="\n"} $$0 ~ score {for(i=1;i<=NF;i++) if($$i ~ /_raw_alpha/) {split($$i,a,":"); gsub(/[ ,}]/, "", a[2]); print a[2]; exit}}' "$(best_models_txt_file)"); \
+	FILE_PATH=$$(awk -v score="$$MIN_SCORE" 'BEGIN{RS=""; FS="\n"} $$0 ~ score {for(i=1;i<=NF;i++) if($$i ~ /^File:/) {gsub(/^File: /, "", $$i); print $$i; exit}}' "$(best_models_txt_file)"); \
+	echo "Global Minimum Score: $$MIN_SCORE"; \
+	echo "Raw Alpha: $$RAW_ALPHA"; \
+	echo "File: $$FILE_PATH"; \
+	echo "========================================="
 
 # Auto-run filter with the global minimum as threshold
 auto-filter:
-	$(eval MIN_SCORE := $(shell grep -Eo '"score":[[:space:]]*[-0-9.e+]+' $(best_models_txt_file) | awk -F: '{gsub(/[[:space:]]/, "", $$2); print $$2}' | sort -n | head -n 1))
-	@echo "Using global minimum as threshold: $(MIN_SCORE)"
-	$(MAKE) filter thresholds=$(MIN_SCORE)
+	@if [ ! -s "$(best_models_txt_file)" ]; then \
+		echo "Error: missing or empty $(best_models_txt_file). Run 'make filter' first."; \
+		exit 1; \
+	fi
+	@MIN_SCORE=$$(grep -Eo '"score":[[:space:]]*[-0-9.e+]+' "$(best_models_txt_file)" | \
+		awk -F: '{gsub(/[[:space:]]/, "", $$2); print $$2}' | sort -n | head -n 1); \
+	echo "Using global minimum as threshold: $$MIN_SCORE"; \
+	$(MAKE) filter thresholds="$$MIN_SCORE"
 
 # Combined workflow: find min details without running filter again
 best-model:
@@ -59,20 +72,20 @@ best-model:
 		echo "Error: missing or empty $(best_models_txt_file). Run 'make filter' first."; \
 		exit 1; \
 	fi
-	$(eval MIN_SCORE := $(shell grep -Eo '"score":[[:space:]]*[-0-9.e+]+' $(best_models_txt_file) | awk -F: '{gsub(/[[:space:]]/, "", $$2); print $$2}' | sort -n | head -n 1))
-	@if [ -z "$(MIN_SCORE)" ]; then \
+	@MIN_SCORE=$$(grep -Eo '"score":[[:space:]]*[-0-9.e+]+' "$(best_models_txt_file)" | \
+		awk -F: '{gsub(/[[:space:]]/, "", $$2); print $$2}' | sort -n | head -n 1); \
+	if [ -z "$$MIN_SCORE" ]; then \
 		echo "Error: could not extract MIN_SCORE from $(best_models_txt_file)."; \
 		exit 1; \
-	fi
-	$(eval RAW_ALPHA := $(shell awk -v score="$(MIN_SCORE)" 'BEGIN{RS=""; FS="\n"} $$0 ~ score {for(i=1;i<=NF;i++) if($$i ~ /_raw_alpha/) {split($$i,a,":"); gsub(/[ ,}]/, "", a[2]); print a[2]; exit}}' $(best_models_txt_file)))
-	$(eval FILE_PATH := $(shell awk -v score="$(MIN_SCORE)" 'BEGIN{RS=""; FS="\n"} $$0 ~ score {for(i=1;i<=NF;i++) if($$i ~ /^File:/) {gsub(/^File: /, "", $$i); print $$i; exit}}' $(best_models_txt_file)))
-	
-	@echo "Best Model Found:"
-	@echo "  Score: $(MIN_SCORE)"
-	@echo "  Raw Alpha: $(RAW_ALPHA)"
-	@echo "  File: $(FILE_PATH)"
-	@echo ""
-	@echo "To use this model, run:"
-	@echo "  python scripts/use_model.py --alpha $(RAW_ALPHA) --file \"$(FILE_PATH)\""
+	fi; \
+	RAW_ALPHA=$$(awk -v score="$$MIN_SCORE" 'BEGIN{RS=""; FS="\n"} $$0 ~ score {for(i=1;i<=NF;i++) if($$i ~ /_raw_alpha/) {split($$i,a,":"); gsub(/[ ,}]/, "", a[2]); print a[2]; exit}}' "$(best_models_txt_file)"); \
+	FILE_PATH=$$(awk -v score="$$MIN_SCORE" 'BEGIN{RS=""; FS="\n"} $$0 ~ score {for(i=1;i<=NF;i++) if($$i ~ /^File:/) {gsub(/^File: /, "", $$i); print $$i; exit}}' "$(best_models_txt_file)"); \
+	echo "Best Model Found:"; \
+	echo "  Score: $$MIN_SCORE"; \
+	echo "  Raw Alpha: $$RAW_ALPHA"; \
+	echo "  File: $$FILE_PATH"; \
+	echo ""; \
+	echo "To use this model, run:"; \
+	echo "  python scripts/use_model.py --alpha $$RAW_ALPHA --file \"$$FILE_PATH\""
 all:
 	$(MAKE) filter && $(MAKE) best-model

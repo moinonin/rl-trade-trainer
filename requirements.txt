@@ -14,7 +14,7 @@ charset-normalizer==3.4.3
 click==8.3.0
 coincurve==21.0.0
 cryptography==46.0.5
-defirl==0.10.33
+defirl==0.10.37
 fastapi==0.118.0
 fire==0.7.1
 frozenlist==1.8.0
