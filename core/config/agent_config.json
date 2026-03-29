@@ -4,6 +4,22 @@
   "epsilon_start": 0.8898455001363847,
   "decay_rate": 0.9958969612472082,
   "min_epsilon": 0.05012494775682322,
+  "switching_cost": 0.05,
+  "hold_reward": -0.00001,
+  "state_rebalance": {
+    "enabled": true,
+    "mode": "reward_weighting",
+    "min_weight": 1.0,
+    "max_weight": 3.0,
+    "warn_ratio_gap": 0.2,
+    "log_path": "user_data/reports/state_distribution.csv"
+  },
+  "convergence_monitor": {
+    "enabled": true,
+    "window": 100,
+    "dominance_threshold": 0.85,
+    "log_path": "user_data/reports/convergence_monitor.csv"
+  },
   "pretrained_signal_map": {
     "long_bias_signal": "do_nothing",
     "short_bias_signal": "go_long",

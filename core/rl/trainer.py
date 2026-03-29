@@ -33,13 +33,20 @@ class BidsTrainer:
         """Calculate reward with explicit position handling"""
         try:
             price_change = next_price - current_price
+            switching_penalty = abs(price_change) * float(self.agent.switching_cost)
 
             if action == self.agent.ACTIONS[0]:  # go_long
-                return price_change if position_status == 0 else -abs(price_change)
+                reward = price_change
+                if position_status == 1:
+                    reward -= switching_penalty
+                return reward
             elif action == self.agent.ACTIONS[1]:  # go_short
-                return -price_change if position_status == 1 else -abs(price_change)
+                reward = -price_change
+                if position_status == 0:
+                    reward -= switching_penalty
+                return reward
             else:  # do_nothing
-                return 0.0
+                return float(self.agent.hold_reward)
         except Exception as e:
             logger.error("Reward calculation error: %s", e, exc_info=True)
             return 0.0
@@ -49,7 +56,8 @@ class BidsTrainer:
                    next_state: Tuple,
                    next_price: float,
                    current_price: float,
-                   position_status: int) -> Dict:
+                   position_status: int,
+                   reward_weight: float = 1.0) -> Dict:
         """Enhanced training step with validation"""
         result = {
             "action": self.agent.ACTIONS[2],  # do_nothing
@@ -60,7 +68,7 @@ class BidsTrainer:
         
         try:
             action = self.agent.select_action(current_state)
-            reward = self.calculate_reward(action, next_price, current_price, position_status)
+            reward = self.calculate_reward(action, next_price, current_price, position_status) * float(reward_weight)
 
             # Validate state transition before updating
             if not self._valid_state_transition(current_state, next_state):
@@ -74,6 +82,7 @@ class BidsTrainer:
             result.update({
                 "action": action,
                 "reward": reward,
+                "reward_weight": float(reward_weight),
                 "q_value": self.agent.q_table[self.agent.get_state_index(current_state)].max()
             })
             
@@ -91,6 +100,7 @@ class BidsTrainer:
                      states: List[Tuple],
                      prices: List[float],
                      position_status: Optional[int] = None,
+                     reward_weights: Optional[List[float]] = None,
                      save_interval: int = 10,
                      print_metrics_interval: int = 50,
                      save_model_interval: int = 100,
@@ -107,8 +117,10 @@ class BidsTrainer:
         position_status: Optional[int]
             Fallback position status (0 for long, 1 for short). When omitted,
             the trainer derives the direction from each state's `is_short` slot.
+        reward_weights: Optional[List[float]]
+            Optional per-step reward multipliers for state rebalancing.
         save_interval: int
-            How often to save progress to history (steps)
+            How often to sample progress for lightweight debug summaries (steps)
         print_metrics_interval: int
             How often to print metrics (steps)
         save_model_interval: int
@@ -129,6 +141,8 @@ class BidsTrainer:
         try:
             if len(states) != len(prices):
                 raise ValueError("States and prices must have equal length")
+            if reward_weights is not None and len(reward_weights) != len(states):
+                raise ValueError("Reward weights must match states length")
                 
             desc = f"Training Episode {self.episode_count + 1}"
             with tqdm(total=len(states)-1, desc=desc, unit="step") as pbar:
@@ -142,16 +156,14 @@ class BidsTrainer:
                         next_state=states[i+1],
                         next_price=prices[i+1],
                         current_price=prices[i],
-                        position_status=step_position_status if step_position_status is not None else 0
+                        position_status=step_position_status if step_position_status is not None else 0,
+                        reward_weight=reward_weights[i] if reward_weights is not None else 1.0
                     )
                     
                     total_reward += step_result["reward"]
                     step_result["total_reward"] = total_reward
                     step_result["epsilon"] = self.agent.epsilon
-                    
-                    # Only append to history at save_interval to reduce memory usage
-                    if i % save_interval == 0:
-                        history.append(step_result)
+                    history.append(step_result)
                     
                     # Update progress metrics
                     pbar.update(1)
@@ -164,6 +176,7 @@ class BidsTrainer:
                     # Print metrics at specified intervals
                     if verbose and i > 0 and i % print_metrics_interval == 0:
                         # Calculate metrics for this interval
+                        sampled_history = history[::max(1, save_interval)]
                         interval_metrics = {
                             'step': i,
                             'total_reward': total_reward,
@@ -175,8 +188,12 @@ class BidsTrainer:
                         
                         # Count actions in recent history
                         recent_actions = [h.get("action") for h in history[-min(len(history), 100):]]
+                        sampled_recent_actions = [h.get("action") for h in sampled_history[-min(len(sampled_history), 100):]]
                         for action in self.agent.ACTIONS:
                             interval_metrics['action_counts'][action] = recent_actions.count(action)
+                        interval_metrics['sampled_action_counts'] = {
+                            action: sampled_recent_actions.count(action) for action in self.agent.ACTIONS
+                        }
                         
                         metrics_history.append(interval_metrics)
                         

@@ -35,6 +35,9 @@ class BidsAgent:
         self.epsilon = self.epsilon_start
         self.min_epsilon = d.get('min_epsilon')
         self.decay_rate = d.get('decay_rate')
+        self.switching_cost = d.get('switching_cost', 0.0)
+        self.hold_reward = d.get('hold_reward', 0.0)
+        self.state_rebalance = d.get('state_rebalance', {})
 
         # Model persistence setup
         self.model_dir = Path(model_dir) if model_dir else Path(__file__).resolve().parent
@@ -215,6 +218,8 @@ class BidsAgent:
             "epsilon_start": float(self.epsilon_start),
             "decay_rate": float(self.decay_rate),
             "min_epsilon": float(self.min_epsilon),
+            "switching_cost": float(self.switching_cost),
+            "hold_reward": float(self.hold_reward),
         })
         return payload
 

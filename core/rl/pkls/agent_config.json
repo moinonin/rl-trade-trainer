@@ -4,11 +4,27 @@
   "epsilon_start": 0.8898455001363847,
   "decay_rate": 0.9958969612472082,
   "min_epsilon": 0.05012494775682322,
+  "switching_cost": 0.05,
+  "hold_reward": -1e-05,
+  "state_rebalance": {
+    "enabled": true,
+    "mode": "reward_weighting",
+    "min_weight": 1.0,
+    "max_weight": 3.0,
+    "warn_ratio_gap": 0.2,
+    "log_path": "user_data/reports/state_distribution.csv"
+  },
+  "convergence_monitor": {
+    "enabled": true,
+    "window": 100,
+    "dominance_threshold": 0.85,
+    "log_path": "user_data/reports/convergence_monitor.csv"
+  },
   "pretrained_signal_map": {
     "long_bias_signal": "do_nothing",
     "short_bias_signal": "go_long",
     "ambiguous_trade_position": "do_nothing",
     "default_is_short": 1
   },
-  "updated_at": "2026-03-29T15:12:05.892261"
+  "updated_at": "2026-03-29T17:25:24.908102"
 }

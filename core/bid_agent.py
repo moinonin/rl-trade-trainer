@@ -67,6 +67,192 @@ class BidAgentTrainer:
         self.best_metrics = {"entropy": 0.9, "burke": 0.00, "alpha": 1.0}
         self.best_model = None
 
+    def _state_rebalance_config(self) -> dict:
+        config = self.agent.state_rebalance if isinstance(self.agent.state_rebalance, dict) else {}
+        return {
+            "enabled": bool(config.get("enabled", False)),
+            "mode": config.get("mode", "reward_weighting"),
+            "min_weight": float(config.get("min_weight", 1.0)),
+            "max_weight": float(config.get("max_weight", 3.0)),
+            "warn_ratio_gap": float(config.get("warn_ratio_gap", 0.2)),
+            "log_path": config.get("log_path", "user_data/reports/state_distribution.csv"),
+        }
+
+    def _convergence_monitor_config(self) -> dict:
+        config = self.agent.config.get("convergence_monitor", {}) if isinstance(self.agent.config, dict) else {}
+        return {
+            "enabled": bool(config.get("enabled", False)),
+            "window": int(config.get("window", 100)),
+            "dominance_threshold": float(config.get("dominance_threshold", 0.85)),
+            "log_path": config.get("log_path", "user_data/reports/convergence_monitor.csv"),
+        }
+
+    def _build_reward_weights(self, positions: List[int]) -> Tuple[List[float], dict]:
+        rebalance = self._state_rebalance_config()
+        long_count = sum(1 for pos in positions if int(pos) == 0)
+        short_count = sum(1 for pos in positions if int(pos) == 1)
+        total_count = len(positions)
+
+        stats = {
+            "long_count": int(long_count),
+            "short_count": int(short_count),
+            "total_count": int(total_count),
+            "long_ratio": float(long_count / total_count) if total_count else 0.0,
+            "short_ratio": float(short_count / total_count) if total_count else 0.0,
+            "rebalance_enabled": rebalance["enabled"],
+            "rebalance_mode": rebalance["mode"],
+        }
+
+        if not rebalance["enabled"] or rebalance["mode"] != "reward_weighting" or long_count == 0 or short_count == 0:
+            return [1.0] * total_count, stats
+
+        minority_count = min(long_count, short_count)
+        majority_count = max(long_count, short_count)
+        raw_minority_weight = majority_count / minority_count if minority_count > 0 else rebalance["max_weight"]
+        minority_weight = min(rebalance["max_weight"], max(rebalance["min_weight"], raw_minority_weight))
+
+        long_weight = minority_weight if long_count < short_count else rebalance["min_weight"]
+        short_weight = minority_weight if short_count < long_count else rebalance["min_weight"]
+
+        stats.update({
+            "long_weight": float(long_weight),
+            "short_weight": float(short_weight),
+        })
+        weights = [float(short_weight if int(pos) == 1 else long_weight) for pos in positions]
+        return weights, stats
+
+    def _build_reward_scale_stats(self, prices: List[float]) -> dict:
+        if len(prices) < 2:
+            return {
+                "avg_abs_price_change": 0.0,
+                "median_abs_price_change": 0.0,
+                "max_abs_price_change": 0.0,
+                "switching_cost_ratio": 0.0,
+                "hold_reward_ratio": 0.0,
+            }
+
+        price_changes = np.diff(np.asarray(prices, dtype=float))
+        abs_changes = np.abs(price_changes)
+        avg_abs_price_change = float(np.mean(abs_changes)) if len(abs_changes) else 0.0
+        median_abs_price_change = float(np.median(abs_changes)) if len(abs_changes) else 0.0
+        max_abs_price_change = float(np.max(abs_changes)) if len(abs_changes) else 0.0
+        baseline = avg_abs_price_change if avg_abs_price_change > 1e-12 else 0.0
+
+        return {
+            "avg_abs_price_change": avg_abs_price_change,
+            "median_abs_price_change": median_abs_price_change,
+            "max_abs_price_change": max_abs_price_change,
+            "switching_cost_ratio": float(self.agent.switching_cost / baseline) if baseline else 0.0,
+            "hold_reward_ratio": float(abs(self.agent.hold_reward) / baseline) if baseline else 0.0,
+        }
+
+    def save_state_distribution_stats(self, stats: dict, run_label: str):
+        """Append per-run state distribution stats for debugging rebalancing."""
+        rebalance = self._state_rebalance_config()
+        output_path = rebalance["log_path"]
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+        row = dict(stats)
+        row["run_label"] = run_label
+        row["logged_at"] = pd.Timestamp.now().isoformat()
+        row.setdefault("long_weight", 1.0)
+        row.setdefault("short_weight", 1.0)
+
+        write_header = not os.path.exists(output_path)
+        pd.DataFrame([row]).to_csv(output_path, mode='a', header=write_header, index=False)
+        logging.info(
+            "State distribution %s | long=%s short=%s | weights long=%.3f short=%.3f | avg_abs_change=%.6f",
+            run_label,
+            row["long_count"],
+            row["short_count"],
+            row["long_weight"],
+            row["short_weight"],
+            row.get("avg_abs_price_change", 0.0),
+        )
+
+    def report_state_distribution(self, stats: dict, run_label: str):
+        """Emit a concise runtime summary for long/short state balance."""
+        rebalance = self._state_rebalance_config()
+        long_ratio = float(stats.get("long_ratio", 0.0))
+        short_ratio = float(stats.get("short_ratio", 0.0))
+        ratio_gap = abs(long_ratio - short_ratio)
+        imbalance_status = "balanced" if ratio_gap <= rebalance["warn_ratio_gap"] else "imbalanced"
+        message = (
+            f"State balance {run_label}: "
+            f"long={stats.get('long_count', 0)} ({long_ratio:.1%}), "
+            f"short={stats.get('short_count', 0)} ({short_ratio:.1%}), "
+            f"weights L/S={stats.get('long_weight', 1.0):.2f}/{stats.get('short_weight', 1.0):.2f}, "
+            f"avg|dP|={stats.get('avg_abs_price_change', 0.0):.6f}, "
+            f"switch_ratio={stats.get('switching_cost_ratio', 0.0):.2f}, "
+            f"hold_ratio={stats.get('hold_reward_ratio', 0.0):.2f}, "
+            f"status={imbalance_status}"
+        )
+
+        if imbalance_status == "imbalanced":
+            logging.warning(message)
+            print(f"{self.YELLOW}{message}{self.END}")
+        else:
+            logging.info(message)
+            print(f"{self.GREEN}{message}{self.END}")
+
+    def summarize_action_convergence(self, history: List[dict], run_label: str) -> Optional[dict]:
+        """Measure recent action dominance without affecting training behavior."""
+        monitor = self._convergence_monitor_config()
+        if not monitor["enabled"] or not history:
+            return None
+
+        window = max(1, monitor["window"])
+        recent_history = history[-window:]
+        recent_actions = [step.get("action", "unknown") for step in recent_history]
+        counts = {action: recent_actions.count(action) for action in self.agent.ACTIONS}
+        total = len(recent_actions)
+        dominant_action = max(counts, key=counts.get) if counts else "unknown"
+        dominant_share = float(counts[dominant_action] / total) if total else 0.0
+        avg_rewards = {}
+        for action in self.agent.ACTIONS:
+            rewards = [float(step.get("reward", 0.0)) for step in recent_history if step.get("action") == action]
+            avg_rewards[f"{action}_avg_reward"] = float(np.mean(rewards)) if rewards else 0.0
+
+        summary = {
+            "run_label": run_label,
+            "window_size": total,
+            "dominant_action": dominant_action,
+            "dominant_share": dominant_share,
+            "dominance_threshold": monitor["dominance_threshold"],
+            "status": "warning" if dominant_share >= monitor["dominance_threshold"] else "ok",
+            "go_long_share": float(counts.get("go_long", 0) / total) if total else 0.0,
+            "go_short_share": float(counts.get("go_short", 0) / total) if total else 0.0,
+            "do_nothing_share": float(counts.get("do_nothing", 0) / total) if total else 0.0,
+        }
+        summary.update(avg_rewards)
+        return summary
+
+    def save_convergence_summary(self, summary: Optional[dict]):
+        if not summary:
+            return
+
+        monitor = self._convergence_monitor_config()
+        output_path = monitor["log_path"]
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+        row = dict(summary)
+        row["logged_at"] = pd.Timestamp.now().isoformat()
+        write_header = not os.path.exists(output_path)
+        pd.DataFrame([row]).to_csv(output_path, mode='a', header=write_header, index=False)
+
+        message = (
+            f"Convergence {row['run_label']}: dominant={row['dominant_action']} "
+            f"({row['dominant_share']:.1%}), shares L/S/N="
+            f"{row['go_long_share']:.1%}/{row['go_short_share']:.1%}/{row['do_nothing_share']:.1%}, "
+            f"status={row['status']}"
+        )
+        if row["status"] == "warning":
+            logging.warning(message)
+            print(f"{self.YELLOW}{message}{self.END}")
+        else:
+            logging.info(message)
+            print(f"{self.GREEN}{message}{self.END}")
+
     def _load_pretrained_signal_config(self) -> dict:
         with open(self.config_path) as f:
             config = json.load(f)
@@ -333,10 +519,10 @@ class BidAgentTrainer:
         trade_history_df.to_csv(output_path, mode='a', header=write_header, index=False)
         logging.info(f"Trade history appended to {output_path}")
 
-    def prepare_training_data(self, df: pd.DataFrame) -> Tuple[List[Tuple], List[float], List[str]]:
+    def prepare_training_data(self, df: pd.DataFrame) -> Tuple[List[Tuple], List[float], List[str], List[float], dict]:
         """
         Prepare training data from DataFrame using transition predictions from old model
-        Returns states, prices, and positions
+        Returns states, prices, positions, reward weights, and state distribution stats
         """
         # Initial validation
         logging.info(f"Initial DataFrame shape: {df.shape}")
@@ -403,9 +589,11 @@ class BidAgentTrainer:
         # Normalize prices
         prices = df['close'].tolist()
         prices = np.array(prices) / np.mean(prices)
+        reward_weights, state_stats = self._build_reward_weights(positions)
+        state_stats.update(self._build_reward_scale_stats(prices.tolist()))
 
         logging.info(f"Prepared {len(states)} states, {len(prices)} prices, {len(trade_positions)} positions")
-        return states, prices.tolist(), trade_positions
+        return states, prices.tolist(), trade_positions, reward_weights, state_stats
 
     def update_position(self, prediction: str, current_price: float, dir: str):
         """Update position based on model prediction"""
@@ -454,18 +642,24 @@ class BidAgentTrainer:
                     continue
                 
                 # Prepare training data with current position state
-                states, prices, trade_positions = self.prepare_training_data(df)
+                states, prices, trade_positions, reward_weights, state_stats = self.prepare_training_data(df)
+                state_run_label = f"continuous_{iteration}"
+                self.save_state_distribution_stats(state_stats, state_run_label)
+                self.report_state_distribution(state_stats, state_run_label)
                 
                 # Train on the latest data with enhanced parameters
                 history = self.trainer.train_episode(
                     states=states,
                     prices=prices,
                     position_status=1 if self.position == 'short' else 0,
-                    save_interval=20,  # Save every 10 steps to history
+                    reward_weights=reward_weights,
+                    save_interval=20,  # Sample lightweight debug summaries every 20 steps
                     print_metrics_interval=50,  # Print metrics every 50 steps
                     save_model_interval=100,  # Save model every 100 steps if improved
                     verbose=True  # Print detailed progress
                 )
+                convergence_summary = self.summarize_action_convergence(history, state_run_label)
+                self.save_convergence_summary(convergence_summary)
                 
                 # Debug logging
                 logging.info(f"Length of states: {len(states)}")
@@ -823,18 +1017,24 @@ class BidAgentTrainer:
             batch_df = historical_df.iloc[i:i + batch_size].copy()
             
             # Prepare training data with positions
-            states, prices, trade_positions = self.prepare_training_data(batch_df)
+            states, prices, trade_positions, reward_weights, state_stats = self.prepare_training_data(batch_df)
+            state_run_label = f"historical_{i // batch_size}"
+            self.save_state_distribution_stats(state_stats, state_run_label)
+            self.report_state_distribution(state_stats, state_run_label)
             
             # Train on the batch with enhanced parameters
             history = self.trainer.train_episode(
                 states=states,
                 prices=prices,
                 position_status=1 if self.position == 'short' else 0,
-                save_interval=20,  # Save every 10 steps to history
+                reward_weights=reward_weights,
+                save_interval=20,  # Sample lightweight debug summaries every 20 steps
                 print_metrics_interval=50,  # Print metrics every 50 steps
                 save_model_interval=100,  # Save model every 100 steps if improved
                 verbose=True  # Print detailed progress
             )
+            convergence_summary = self.summarize_action_convergence(history, state_run_label)
+            self.save_convergence_summary(convergence_summary)
             
             # Debug logging
             print(f"Length of states: {len(states)}")
@@ -1015,7 +1215,6 @@ def main():
                 # Load historical data
                 historical_df = pd.read_csv(file_path)
                 #exec_optimization(file_path)
-                historical_df = historical_df[historical_df['reward'] > 0]
                 
                 if historical_df.empty:
                     print(f"⚠️ Skipping empty file: {os.path.basename(file_path)}")
