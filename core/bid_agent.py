@@ -76,16 +76,16 @@ class BidAgentTrainer:
         - short-side pretrained `go_long` means short bias
         - ambiguous/no-signal falls back to previous direction
         """
-        is_long_signal = long_signal == 'do_nothing' and short_signal != 'go_long'
-        is_short_signal = short_signal == 'go_long' and long_signal != 'do_nothing'
+        is_long_signal = long_signal == 'do_nothing'
+        is_short_signal = short_signal == 'go_long'
 
-        if is_long_signal:
+        if is_long_signal and not is_short_signal:
             return 0, 'long'
-        if is_short_signal:
+        if is_short_signal and not is_long_signal:
             return 1, 'short'
-        return previous_is_short, None
+        return previous_is_short, 'do_nothing'
 
-    def resolve_position_signal(self, prediction: Optional[str]) -> Optional[str]:
+    def resolve_position_signal(self, prediction: Optional[str], dir: Optional[str]) -> Optional[str]:
         """
         Translate a raw model signal into a canonical position action.
 
@@ -94,11 +94,11 @@ class BidAgentTrainer:
         - `go_long` means open/keep short
         - `exit` means flatten
         """
-        if prediction == 'do_nothing':
+        if prediction == 'do_nothing' and dir == 'long':
             return 'long'
-        if prediction == 'go_long':
+        if prediction == 'go_long' and dir == 'short':
             return 'short'
-        if prediction == 'exit':
+        else:
             return 'exit'
         return None
 
@@ -386,19 +386,23 @@ class BidAgentTrainer:
         logging.info(f"Prepared {len(states)} states, {len(prices)} prices, {len(trade_positions)} positions")
         return states, prices.tolist(), trade_positions
 
-    def update_position(self, prediction: str, current_price: float):
+    def update_position(self, prediction: str, current_price: float, dir: str):
         """Update position based on model prediction"""
-        target_position = self.resolve_position_signal(prediction)
+        target_long_position = self.resolve_position_signal(prediction, dir='long')
+        target_short_position = self.resolve_position_signal(prediction, dir='short')
 
-        if target_position == 'long' and self.position != 'long':
+        target_exit_long_position = self.resolve_position_signal(prediction == 'exit', dir='long')
+        target_exit_short_position = self.resolve_position_signal(prediction == 'exit', dir='short')
+
+        if target_long_position == 'long' and self.position != 'long':
             self.position = 'long'
             self.entry_price = current_price
             logging.info(f"Position changed to LONG at price {current_price}")
-        elif target_position == 'short' and self.position != 'short':
+        elif target_short_position == 'short' and self.position != 'short':
             self.position = 'short'
             self.entry_price = current_price
             logging.info(f"Position changed to SHORT at price {current_price}")
-        elif target_position == 'exit' and self.position is not None:
+        elif (target_exit_long_position == 'exit' or target_exit_short_position == 'exit') and self.position is not None:
             logging.info(f"Exiting {self.position} position from {self.entry_price}")
             self.position = None
             self.entry_price = 0
@@ -535,7 +539,8 @@ class BidAgentTrainer:
                 base_state = latest_state[:3]
                 current_price = df['close'].iloc[-1]
                 prediction, is_short = self.agent.strategic_action_selection(base_state)
-                self.update_position(prediction, current_price)
+                dir = 'short' if is_short else 'long' 
+                self.update_position(prediction, current_price, dir)
                 
                 logging.info(f"Latest prediction: {prediction}, Current position: {self.position}")
                 if self.position:
@@ -879,7 +884,8 @@ class BidAgentTrainer:
             latest_state = states[-1]
             base_state = latest_state[:3]
             prediction, is_short = self.agent.strategic_action_selection(base_state)
-            self.update_position(prediction, current_price)
+            dir = 'short' if is_short else 'long' 
+            self.update_position(prediction, current_price, dir)
             
             # Optional delay for historical processing
             if historical_interval > 0:
@@ -919,7 +925,7 @@ class BidAgentTrainer:
                         historical_df: pd.DataFrame,
                         pair: str,
                         exchange_name: str,
-                        interval: str = '1m',
+                        interval: str = '1s',
                         training_window: int = 100,
                         historical_interval: int = 0,  # For historical data
                         live_interval: int = 20,      # For live data
@@ -1032,8 +1038,8 @@ def main():
     
     try:
         trainer.continuous_training(
-            pair="BTC/USDT:USDT",
-            exchange_name="binance",
+            pair="BTC/USDC:USDC",
+            exchange_name="bybit",
             interval="1m",
             training_window=100,
             update_interval=20,

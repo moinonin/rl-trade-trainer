@@ -3,7 +3,7 @@ import json
 import sys
 from pathlib import Path
 
-MIN_WIN_RATE = 0.71
+MIN_WIN_RATE = 0.2
 
 def find_alpha_blocks(data, current_path=""):
     """

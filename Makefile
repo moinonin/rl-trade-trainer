@@ -8,14 +8,14 @@ purge:
 	rm -rf user_data/optimization_results/*
 	rm core/rl/pkls/*
 
-thresholds ?= 0.04
-base_dir ?= user_data/optimization_results/ # core/rl/pkls/ # 
+thresholds ?= 301
+base_dir ?= core/rl/pkls/ # 
 best_models_txt_file ?= best_models/optimization_results_20260320_093755.txt
 best_models_json_file ?= best_models/optimization_results_20260320_093755.json
 
 filter:
 	python scripts/find_low_alpha.py $(base_dir) > $(best_models_txt_file)
-	#python scripts/find_high_win.py $(base_dir) >> $(best_models_txt_file)
+	#python scripts/find_low_score.py $(base_dir) $(thresholds) >> $(best_models_txt_file)
 	python scripts/clean_models.py $(best_models_txt_file) $(thresholds) > $(best_models_json_file)
 
 # Get global minimum score

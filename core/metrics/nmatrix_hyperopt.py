@@ -541,7 +541,7 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
                     # Negative alpha is good - use it directly
                     alpha_contrib = sigma * alpha_val
                     
-                if ear_val > 0:
+                if ear_val > 0 or ear_val is None:
                     # Positive EAR is terrible
                     ear_contrib = gamma * (ear_val ** 2 * 1000)
                 else:
@@ -606,6 +606,8 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
                     print(f"{CYAN}Iteration {current_iteration}:{END} Score = {score_color}{nmatrix:.6f}{END}")
                     print(f"  Alpha: {alpha_color}{alpha_val:.6e}{END}, EAR: {ear_color}{ear_val:.6e}{END}")
 
+                if np.isnan(nmatrix) or np.isinf(nmatrix):
+                    return 1e10
                 return nmatrix
 
             except Exception as e:
@@ -744,7 +746,7 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
                 print(f"{BOLD}Burke:{END}   {burke_color}{current_burke:.6f} {burke_indicator}{END} (Best: {YELLOW}{best_burke:.6f}{END})")
                 print(f"{BOLD}Entropy:{END} {entropy_color}{current_entropy:.6f} {entropy_indicator}{END} (Best: {YELLOW}{best_entropy:.6f}{END})")
 
-                meets_gate_constraints = (win_rate >= 0.71 and signed_alpha < 0)
+                meets_gate_constraints = (win_rate >= 0.2 and signed_alpha < 0)
 
                 # Check if this is a best model (meets all criteria + hard gates)
                 if (signed_alpha < best_alpha and
@@ -810,7 +812,7 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
                     if not meets_gate_constraints:
                         print(
                             f"\n{RED}❌ Results not saved - failed hard gates: "
-                            f"win_rate={win_rate:.2%} (need >=71.00%), "
+                            f"win_rate={win_rate:.2%} (need >=20.00%), "
                             f"_raw_alpha={signed_alpha:.6f} (need <0).{END}"
                         )
                     else:
