@@ -321,6 +321,18 @@ class BidAgentTrainer:
         df.to_csv(output_path, index=False)
         logging.info(f"Episode reports saved to {output_path}")
 
+    def save_trade_history(self, episode_df: pd.DataFrame, output_path: str, episode_num: int):
+        """Append per-trade model outputs for downstream analysis."""
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+        trade_history_df = episode_df.copy()
+        trade_history_df['episode_number'] = episode_num
+        trade_history_df['logged_at'] = pd.Timestamp.now().isoformat()
+
+        write_header = not os.path.exists(output_path)
+        trade_history_df.to_csv(output_path, mode='a', header=write_header, index=False)
+        logging.info(f"Trade history appended to {output_path}")
+
     def prepare_training_data(self, df: pd.DataFrame) -> Tuple[List[Tuple], List[float], List[str]]:
         """
         Prepare training data from DataFrame using transition predictions from old model
@@ -483,6 +495,11 @@ class BidAgentTrainer:
                     'reward': history_rewards[:min_length],
                     'trade_position': trade_positions[:min_length]
                 })
+                self.save_trade_history(
+                    episode_df,
+                    'user_data/reports/trade_history.csv',
+                    iteration
+                )
                 
                 logging.info(f"Final DataFrame shape: {episode_df.shape}")
                 
@@ -847,6 +864,11 @@ class BidAgentTrainer:
                 'reward': history_rewards[:min_length],
                 'trade_position': trade_positions[:min_length]
             })
+            self.save_trade_history(
+                episode_df,
+                'user_data/reports/trade_history.csv',
+                i // batch_size
+            )
             
             print(f"Final DataFrame shape: {episode_df.shape}")
             

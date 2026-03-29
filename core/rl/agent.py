@@ -328,16 +328,18 @@ class BidsAgent:
         return self.ACTIONS[np.argmax(self.q_table[state_idx])]
         
     def strategic_action_selection(self, base_state: Tuple) -> Tuple[str, int]:
-        """Compare long/short scenarios using state augmentation"""
+        """Select the best action across long/short state variants."""
         long_state = base_state + (0,)
         short_state = base_state + (1,)
-        
+
         long_q = self.q_table[self._register_state(long_state)]
         short_q = self.q_table[self._register_state(short_state)]
-        
-        if np.max(long_q) > np.max(short_q):
-            return self.select_action(long_state), 0
-        return self.select_action(short_state), 1
+
+        combined_q = np.vstack((long_q, short_q))
+        state_choice, action_idx = np.unravel_index(np.argmax(combined_q), combined_q.shape)
+        chosen_is_short = int(state_choice)
+
+        return self.ACTIONS[int(action_idx)], chosen_is_short
         
     def update(self, state: Tuple, action: str, reward: float, next_state: Tuple):
         """Double Q-learning update with bounds checking"""

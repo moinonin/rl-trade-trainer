@@ -39,6 +39,31 @@ def extract_last_is_short(state_str):
     except:
         return 0
 
+def infer_action_distribution(df: pd.DataFrame) -> Dict[str, float]:
+    """Return action distribution from actual trade actions when available."""
+    if 'action' in df.columns:
+        counts = df['action'].fillna('unknown').value_counts(normalize=True).to_dict()
+        return {action: float(counts.get(action, 0.0)) for action in ['do_nothing', 'go_long', 'go_short']}
+
+    return {
+        'do_nothing': float(df['do_nothing'].fillna(0).mean()) if 'do_nothing' in df.columns else 0.0,
+        'go_long': float(df['go_long'].fillna(0).mean()) if 'go_long' in df.columns else 0.0,
+        'go_short': float(df['go_short'].fillna(0).mean()) if 'go_short' in df.columns else 0.0
+    }
+
+def determine_actual_action(df: pd.DataFrame) -> pd.Series:
+    """Resolve actual actions from a detailed trade log or episode summary fallback."""
+    if 'action' in df.columns:
+        return df['action'].fillna('unknown')
+
+    action_cols = [c for c in ['do_nothing', 'go_long', 'go_short'] if c in df.columns]
+    if action_cols:
+        valid_action_cols = [c for c in action_cols if not df[c].isna().all()]
+        if valid_action_cols:
+            return df[valid_action_cols].fillna(0).idxmax(axis=1)
+
+    return pd.Series(['unknown'] * len(df), index=df.index)
+
 def process_trading_history(csv_path: str, starting_balance: float) -> dict:
     """
     Process trading history CSV with columns: action, reward, state, next_state
@@ -80,17 +105,7 @@ def process_trading_history(csv_path: str, starting_balance: float) -> dict:
             'is_short': df['inferred_is_short']
         })
 
-        # --- FIRST UPDATED SECTION: action column for nmatrix ---
-        trades_df['action'] = np.where(
-            trades_df['is_short'] == 1,
-            'go_short',
-            np.where(
-                trades_df['is_short'] == 0,
-                'go_long',
-                'do_nothing'
-            )
-        )
-        # -------------------------------------------------------------------------
+        trades_df['action'] = determine_actual_action(df)
 
         pbar.update(1)
         time.sleep(0.2)
@@ -101,13 +116,7 @@ def process_trading_history(csv_path: str, starting_balance: float) -> dict:
         nmatrix_score = calculate_nmatrix(trades_df, min_date, max_date, starting_balance)
         pbar.update(1)
 
-        # --- SECOND UPDATED SECTION: action distribution from one‑hot columns ---
-        action_distribution = {
-            'do_nothing': df['do_nothing'].mean() if 'do_nothing' in df.columns else 0,
-            'go_long': df['go_long'].mean() if 'go_long' in df.columns else 0,
-            'go_short': df['go_short'].mean() if 'go_short' in df.columns else 0
-        }
-        # ------------------------------------------------------------------------
+        action_distribution = infer_action_distribution(df)
 
         print("\n📊 Compiling final report...")
         report = {
@@ -117,7 +126,8 @@ def process_trading_history(csv_path: str, starting_balance: float) -> dict:
             'avg_reward': np.mean(rewards),
             'max_drawdown': calculate_max_drawdown(rewards),
             'cumulative_reward': np.sum(rewards),
-            'nmatrix_score': nmatrix_score.get('signed_alpha') if nmatrix_score else None
+            'nmatrix_score': nmatrix_score.get('signed_alpha') if nmatrix_score else None,
+            'history_source': 'trade_history' if 'action' in df.columns else 'episode_report_summary'
         }
         pbar.update(1)
 
@@ -139,6 +149,7 @@ def generate_performance_report(csv_path: str, starting_balance: float) -> dict:
         metrics_emoji = {
             'rewards': '💰',
             'total_trades': '🔄',
+            'history_source': '🧭',
             'action_distribution': '📊',
             'avg_reward': '📈',
             'max_drawdown': '📉',
@@ -159,6 +170,7 @@ def generate_performance_report(csv_path: str, starting_balance: float) -> dict:
 
         df = pd.read_csv(csv_path)
         df['is_short_val'] = df['state'].apply(extract_last_is_short)
+        df['actual_action'] = determine_actual_action(df)
         short_mask = df['is_short_val'] == 1
         long_mask = df['is_short_val'] == 0
         
@@ -210,16 +222,6 @@ def generate_performance_report(csv_path: str, starting_balance: float) -> dict:
         print("\n🏆 Dominant Actions for Winning Trades:")
         
         # Determine action taken
-        if 'action' in df.columns:
-            df['actual_action'] = df['action']
-        else:
-            action_cols = [c for c in ['do_nothing', 'go_long', 'go_short'] if c in df.columns]
-            if action_cols:
-                valid_action_cols = [c for c in action_cols if not df[c].isna().all()]
-                df['actual_action'] = df[valid_action_cols].fillna(0).idxmax(axis=1) if valid_action_cols else 'unknown'
-            else:
-                df['actual_action'] = 'unknown'
-
         winning_df = df[df[reward_col] > 0]
         if not winning_df.empty:
             for pos_type, mask in [('Long', long_mask), ('Short', short_mask)]:
@@ -296,7 +298,8 @@ def show_action_reward(csv_path: str):
             print(f"{action} ({pos_name}): {result}")
 
 if __name__ == "__main__":
-    csv_path = "user_data/reports/episode_reports.csv"
+    trade_history_path = "user_data/reports/trade_history.csv"
+    csv_path = trade_history_path if os.path.exists(trade_history_path) else "user_data/reports/episode_reports.csv"
     starting_balance = 10000.0
     generate_performance_report(csv_path, starting_balance)
     try:
