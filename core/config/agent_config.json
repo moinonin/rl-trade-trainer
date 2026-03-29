@@ -3,5 +3,11 @@
   "discount_factor": 0.8365035231833666,
   "epsilon_start": 0.8898455001363847,
   "decay_rate": 0.9958969612472082,
-  "min_epsilon": 0.05012494775682322
+  "min_epsilon": 0.05012494775682322,
+  "pretrained_signal_map": {
+    "long_bias_signal": "do_nothing",
+    "short_bias_signal": "go_long",
+    "ambiguous_trade_position": "do_nothing",
+    "default_is_short": 1
+  }
 }

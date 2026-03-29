@@ -110,6 +110,17 @@ class RDQLmodel_bids:
         except Exception:
             return 0.0
 
+    def _canonicalize_state(self, state_tuple):
+        normalized = []
+        for value in tuple(state_tuple):
+            if isinstance(value, (np.floating, float)):
+                normalized.append(round(float(value), 4))
+            elif isinstance(value, (np.integer, int, np.bool_, bool)):
+                normalized.append(int(value))
+            else:
+                normalized.append(value)
+        return tuple(normalized)
+
     def _build_kdtree(self):
         self.kdtree = None
         self.kdtree_index_map = {}
@@ -175,7 +186,7 @@ class RDQLmodel_bids:
             }
 
         state = self.prep_state()
-        state_tuple = tuple(state.flatten())
+        state_tuple = self._canonicalize_state(tuple(state.flatten()))
         state_index = self.state_to_index_dict.get(state_tuple, -1)
         if state_index == -1:
             state_index = self._nearest_state_index(state_tuple)

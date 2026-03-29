@@ -5,6 +5,7 @@ import time
 import numpy as np
 import pandas as pd
 import warnings
+import json
 from typing import List, Tuple, Optional
 from pathlib import Path
 
@@ -53,6 +54,8 @@ class BidAgentTrainer:
         
         # Create the agent with default model directory
         self.agent = BidsAgent(model_dir=str(Path(__file__).resolve().parent / "rl"))
+        self.config_path = Path(__file__).resolve().parent / "config" / "agent_config.json"
+        self.pretrained_signal_config = self._load_pretrained_signal_config()
         print(f"{self.YELLOW}Using default model with {len(self.agent.state_to_index)} states{self.END}")
         self.trainer = BidsTrainer(self.agent)
         self.position = None  # None, 'long', or 'short'
@@ -64,41 +67,47 @@ class BidAgentTrainer:
         self.best_metrics = {"entropy": 0.9, "burke": 0.00, "alpha": 1.0}
         self.best_model = None
 
+    def _load_pretrained_signal_config(self) -> dict:
+        with open(self.config_path) as f:
+            config = json.load(f)
+
+        mapping = config.get("pretrained_signal_map", {})
+        return {
+            "long_bias_signal": mapping.get("long_bias_signal", "do_nothing"),
+            "short_bias_signal": mapping.get("short_bias_signal", "go_long"),
+            "ambiguous_trade_position": mapping.get("ambiguous_trade_position", "do_nothing"),
+            "default_is_short": int(mapping.get("default_is_short", 1)),
+        }
+
     def resolve_pretrained_direction(self,
                                      long_signal: Optional[str],
                                      short_signal: Optional[str],
-                                     previous_is_short: int = 1) -> Tuple[int, Optional[str]]:
+                                     previous_is_short: Optional[int] = None) -> Tuple[int, Optional[str]]:
         """
         Translate raw pretrained outputs into one canonical direction.
-
-        Current contract:
-        - long-side pretrained `do_nothing` means long bias
-        - short-side pretrained `go_long` means short bias
-        - ambiguous/no-signal falls back to previous direction
         """
-        is_long_signal = long_signal == 'do_nothing'
-        is_short_signal = short_signal == 'go_long'
+        mapping = self.pretrained_signal_config
+        fallback_is_short = (
+            mapping["default_is_short"] if previous_is_short is None else previous_is_short
+        )
+        is_long_signal = long_signal == mapping["long_bias_signal"]
+        is_short_signal = short_signal == mapping["short_bias_signal"]
 
         if is_long_signal and not is_short_signal:
             return 0, 'long'
         if is_short_signal and not is_long_signal:
             return 1, 'short'
-        return previous_is_short, 'do_nothing'
+        return fallback_is_short, mapping["ambiguous_trade_position"]
 
     def resolve_position_signal(self, prediction: Optional[str], dir: Optional[str]) -> Optional[str]:
         """
         Translate a raw model signal into a canonical position action.
-
-        Current contract:
-        - `do_nothing` means open/keep long
-        - `go_long` means open/keep short
-        - `exit` means flatten
         """
-        if prediction == 'do_nothing' and dir == 'long':
+        if prediction == 'go_long':
             return 'long'
-        if prediction == 'go_long' and dir == 'short':
+        if prediction == 'go_short':
             return 'short'
-        else:
+        if prediction == 'exit':
             return 'exit'
         return None
 
@@ -344,7 +353,7 @@ class BidAgentTrainer:
 
             if i < min_required_rows - 1:
                 # Use default position (1 for short) for initial states
-                initial_is_short = 1
+                initial_is_short = self.pretrained_signal_config["default_is_short"]
                 states.append((current_row['ask'], current_row['bid'], current_row['sma-compare'], initial_is_short))
                 positions.append(initial_is_short)
                 trade_positions.append(None)
@@ -366,7 +375,7 @@ class BidAgentTrainer:
             is_short, trade_position = self.resolve_pretrained_direction(
                 long_signal=long_next_action,
                 short_signal=short_next_action,
-                previous_is_short=positions[-1] if positions else 1,
+                previous_is_short=positions[-1] if positions else self.pretrained_signal_config["default_is_short"],
             )
 
             # Update base_state with the determined is_short
@@ -388,21 +397,17 @@ class BidAgentTrainer:
 
     def update_position(self, prediction: str, current_price: float, dir: str):
         """Update position based on model prediction"""
-        target_long_position = self.resolve_position_signal(prediction, dir='long')
-        target_short_position = self.resolve_position_signal(prediction, dir='short')
+        target_position = self.resolve_position_signal(prediction, dir=dir)
 
-        target_exit_long_position = self.resolve_position_signal(prediction == 'exit', dir='long')
-        target_exit_short_position = self.resolve_position_signal(prediction == 'exit', dir='short')
-
-        if target_long_position == 'long' and self.position != 'long':
+        if target_position == 'long' and self.position != 'long':
             self.position = 'long'
             self.entry_price = current_price
             logging.info(f"Position changed to LONG at price {current_price}")
-        elif target_short_position == 'short' and self.position != 'short':
+        elif target_position == 'short' and self.position != 'short':
             self.position = 'short'
             self.entry_price = current_price
             logging.info(f"Position changed to SHORT at price {current_price}")
-        elif (target_exit_long_position == 'exit' or target_exit_short_position == 'exit') and self.position is not None:
+        elif target_position == 'exit' and self.position is not None:
             logging.info(f"Exiting {self.position} position from {self.entry_price}")
             self.position = None
             self.entry_price = 0

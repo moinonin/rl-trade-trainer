@@ -28,6 +28,7 @@ class BidsAgent:
         self.config_path = Path(__file__).resolve().parents[1] / "config" / "agent_config.json"
         with open(self.config_path) as f:
             d = json.load(f)
+        self.config = dict(d)
         self.learning_rate = d.get('learning_rate')
         self.discount_factor = d.get('discount_factor')
         self.epsilon_start = d.get('epsilon_start')
@@ -207,13 +208,15 @@ class BidsAgent:
             raise RuntimeError("Model persistence failed") from e
 
     def _current_hyperparams(self) -> Dict[str, float]:
-        return {
+        payload = dict(self.config)
+        payload.update({
             "learning_rate": float(self.learning_rate),
             "discount_factor": float(self.discount_factor),
             "epsilon_start": float(self.epsilon_start),
             "decay_rate": float(self.decay_rate),
             "min_epsilon": float(self.min_epsilon),
-        }
+        })
+        return payload
 
     def _save_hyperparams_snapshot(self, pkls_dir: Path):
         """
