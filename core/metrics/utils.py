@@ -384,10 +384,15 @@ def print_all_metrics():
                         metrics = data.get('metrics', {})
                         burke = metrics.get('burke', 'N/A')
                         entropy = metrics.get('entropy', 'N/A')
-                        ear = alpha * burke/entropy if entropy != 0 else 100
+                        if not all(isinstance(v, (int, float)) for v in [alpha, burke, entropy]):
+                            ear = None
+                        elif abs(entropy) < 1e-12:
+                            ear = None
+                        else:
+                            ear = alpha * burke / entropy
                         win_rate = metrics.get('win_rate', 'N/A')
                         
-                        if ear < 200 and alpha < -0.02 and entropy < 1 and opt_score <= 0 and win_rate >= 0.6:
+                        if ear is not None and ear < 200 and alpha < -0.02 and entropy < 1 and opt_score <= 0 and win_rate >= 0.6:
                         #if entropy <= -0.73 and win_rate > 0.3:
                             print(f"\nDirectory: {os.path.basename(directory)}/{alpha_dir}")
                             print(f"Alpha:   {alpha:.6f}")

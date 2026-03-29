@@ -24,6 +24,24 @@ BLUE = '\033[94m'
 BOLD = '\033[1m'
 END = '\033[0m'
 
+INVALID_EAR_PENALTY = 1e10
+
+def safe_ear(alpha, entropy):
+    """Return a finite EAR value or None when the ratio is undefined."""
+    try:
+        alpha_val = float(alpha)
+        entropy_val = float(entropy)
+    except (TypeError, ValueError):
+        return None
+
+    if not np.isfinite(alpha_val) or not np.isfinite(entropy_val):
+        return None
+    if abs(entropy_val) < 1e-12:
+        return None
+
+    ear_val = alpha_val / entropy_val
+    return float(ear_val) if np.isfinite(ear_val) else None
+
 def save_optimization_result(signed_alpha, result, metrics, base_path="user_data/optimization_results"):
     """
     Save optimization results to a JSON file
@@ -431,7 +449,7 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
 
         target_win_rate = find_min_win_rate(daily_returns=daily_returns)
         entropy = cal_entropy()
-        EAR = signed_alpha/entropy
+        EAR = safe_ear(signed_alpha, entropy)
         target_entropy = 0
         target_EAR = -1 #target_alpha/entropy #-0.5
 
@@ -444,7 +462,7 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
         signed_alpha_deviation = min(0, signed_alpha - target_alpha)  # Penalize if above the target
         entropy_deviation = min(0, entropy - target_entropy)  # Penalize if above the target
         #EAR_deviation = min(0, target_EAR)  # Penalize if above the target 
-        EAR_penalty = max(0, EAR)
+        EAR_penalty = INVALID_EAR_PENALTY if EAR is None else max(0, EAR)
 
         # Initialize a list to track discarded parameters and optimization progress
         discarded_params = []
@@ -529,7 +547,7 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
                 cofactors_val = float(cofactors_norm)
                 alpha_val = float(signed_alpha)
                 entropy_val = float(entropy)
-                ear_val = float(EAR)
+                ear_val = safe_ear(signed_alpha, entropy)
                 matrix = n_mat
 
                 # --- Fix: For alpha and EAR, we want them NEGATIVE ---
@@ -541,7 +559,10 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
                     # Negative alpha is good - use it directly
                     alpha_contrib = sigma * alpha_val
                     
-                if ear_val > 0 or ear_val is None:
+                if ear_val is None:
+                    # Undefined EAR is treated as a bad metric.
+                    ear_contrib = gamma * INVALID_EAR_PENALTY
+                elif ear_val > 0:
                     # Positive EAR is terrible
                     ear_contrib = gamma * (ear_val ** 2 * 1000)
                 else:
@@ -594,6 +615,7 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
                         'regularization': regularization_penalty,
                         '_raw_alpha': alpha_val,
                         '_raw_EAR': ear_val,
+                        'ear_valid': ear_val is not None,
                         'matrix': matrix
                     }
                 }
@@ -602,9 +624,10 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
                 if current_iteration % print_frequency == 0:
                     score_color = GREEN if nmatrix < 0 else (YELLOW if nmatrix < 0.5 else RED)
                     alpha_color = GREEN if alpha_val < 0 else RED
-                    ear_color = GREEN if ear_val < 0 else RED
+                    ear_color = GREEN if (ear_val is not None and ear_val < 0) else RED
+                    ear_display = f"{ear_val:.6e}" if ear_val is not None else "invalid"
                     print(f"{CYAN}Iteration {current_iteration}:{END} Score = {score_color}{nmatrix:.6f}{END}")
-                    print(f"  Alpha: {alpha_color}{alpha_val:.6e}{END}, EAR: {ear_color}{ear_val:.6e}{END}")
+                    print(f"  Alpha: {alpha_color}{alpha_val:.6e}{END}, EAR: {ear_color}{ear_display}{END}")
 
                 if np.isnan(nmatrix) or np.isinf(nmatrix):
                     return 1e10
