@@ -64,7 +64,75 @@ def determine_actual_action(df: pd.DataFrame) -> pd.Series:
 
     return pd.Series(['unknown'] * len(df), index=df.index)
 
-def process_trading_history(csv_path: str, starting_balance: float) -> dict:
+def calculate_trade_durations(df: pd.DataFrame, step_interval_seconds: int = 60) -> Dict[str, float]:
+    """Calculate average trade durations for go_long and go_short actions."""
+    if 'action' not in df.columns:
+        # Resolve actions if not present
+        df = df.copy()
+        df['action'] = determine_actual_action(df)
+    
+    actions = df['action'].tolist()
+    episodes = df['episode_number'].tolist() if 'episode_number' in df.columns else [0] * len(actions)
+    
+    long_durations = []
+    short_durations = []
+    
+    current_action = None
+    current_duration = 0
+    current_episode = None
+    
+    for action, episode in zip(actions, episodes):
+        if episode != current_episode:
+            if current_action == 'go_long':
+                long_durations.append(current_duration)
+            elif current_action == 'go_short':
+                short_durations.append(current_duration)
+            current_episode = episode
+            if action in ['go_long', 'go_short']:
+                current_action = action
+                current_duration = 1
+            else:
+                current_action = None
+                current_duration = 0
+            continue
+            
+        if action == current_action and action in ['go_long', 'go_short']:
+            current_duration += 1
+        else:
+            if current_action == 'go_long':
+                long_durations.append(current_duration)
+            elif current_action == 'go_short':
+                short_durations.append(current_duration)
+            
+            if action in ['go_long', 'go_short']:
+                current_action = action
+                current_duration = 1
+            else:
+                current_action = None
+                current_duration = 0
+                
+    if current_action == 'go_long':
+        long_durations.append(current_duration)
+    elif current_action == 'go_short':
+        short_durations.append(current_duration)
+        
+    avg_long = np.mean(long_durations) if long_durations else 0
+    avg_short = np.mean(short_durations) if short_durations else 0
+    avg_total = np.mean(long_durations + short_durations) if (long_durations + short_durations) else 0
+    max_dur = np.max(long_durations + short_durations) if (long_durations + short_durations) else 0
+
+    return {
+        'avg_long_duration': avg_long,
+        'avg_short_duration': avg_short,
+        'avg_trade_duration': avg_total,
+        'max_trade_duration': max_dur,
+        'avg_long_duration_mins': (avg_long * step_interval_seconds) / 60.0,
+        'avg_short_duration_mins': (avg_short * step_interval_seconds) / 60.0,
+        'avg_trade_duration_mins': (avg_total * step_interval_seconds) / 60.0,
+        'max_trade_duration_mins': (max_dur * step_interval_seconds) / 60.0
+    }
+
+def process_trading_history(csv_path: str, starting_balance: float, step_interval: int = 60) -> dict:
     """
     Process trading history CSV with columns: action, reward, state, next_state
     (Minimal update: only the two requested sections and timestamp frequency fix)
@@ -117,12 +185,14 @@ def process_trading_history(csv_path: str, starting_balance: float) -> dict:
         pbar.update(1)
 
         action_distribution = infer_action_distribution(df)
+        trade_durations = calculate_trade_durations(df, step_interval_seconds=step_interval)
 
         print("\n📊 Compiling final report...")
         report = {
             'rewards': rewards,
             'total_trades': len(df),
             'action_distribution': action_distribution,
+            **trade_durations,
             'avg_reward': np.mean(rewards),
             'max_drawdown': calculate_max_drawdown(rewards),
             'cumulative_reward': np.sum(rewards),
@@ -134,12 +204,12 @@ def process_trading_history(csv_path: str, starting_balance: float) -> dict:
     print("\n✨ Analysis complete! Generating report...\n")
     return report
 
-def generate_performance_report(csv_path: str, starting_balance: float) -> dict:
+def generate_performance_report(csv_path: str, starting_balance: float, step_interval: int = 60) -> dict:
     """
     Generate comprehensive performance report from trading history
     """
     try:
-        report = process_trading_history(csv_path, starting_balance)
+        report = process_trading_history(csv_path, starting_balance, step_interval)
         
         # Print report with fancy formatting
         print("\n" + "="*50)
@@ -165,7 +235,15 @@ def generate_performance_report(csv_path: str, starting_balance: float) -> dict:
             'avg_profit_per_trade': '💵',
             'avg_loss_per_trade': '💸',
             'profit_factor': '⚖️',
-            'risk_reward_ratio': '⚡'
+            'risk_reward_ratio': '⚡',
+            'avg_long_duration': '⏱️',
+            'avg_short_duration': '⏱️',
+            'avg_trade_duration': '⏳',
+            'max_trade_duration': '🚀',
+            'avg_long_duration_mins': '🕒',
+            'avg_short_duration_mins': '🕒',
+            'avg_trade_duration_mins': '🕒',
+            'max_trade_duration_mins': '⏰'
         }
 
         df = pd.read_csv(csv_path)
