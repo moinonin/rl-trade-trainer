@@ -3,7 +3,7 @@ import pickle
 from nlp.imit_main import imit_signal as imit
 from nlp.nlp_main import nlp_signal as nlp # nlp-project==0.0.9
 #from defirl.rlhf_rdql import RDQLmodel_bids as bid
-from defirl.rlhf_long import RLmodel_bids as bid
+from defirl.rlhf_rdql import RDQLmodel_bids as bid
 # Add the project root directory to Python path
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(current_dir)  # Only go up one level since we're already in 'bid'

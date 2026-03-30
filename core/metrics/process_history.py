@@ -85,9 +85,11 @@ def process_trading_history(csv_path: str, starting_balance: float) -> dict:
         time.sleep(0.2)
 
         # Create timestamps for nmatrix calculation (fixed freq='h')
+        # Fix: Use an hour offset instead of days to stay within pandas timestamp bounds
         print("\n⏰ Generating temporal analysis framework...")
+        start_date = datetime.now() - timedelta(hours=len(df))
         df['timestamp'] = pd.date_range(
-            start=datetime.now() - timedelta(days=len(df)),
+            start=start_date,
             periods=len(df),
             freq='h'
         )
