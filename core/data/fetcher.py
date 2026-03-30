@@ -32,7 +32,7 @@ logging.basicConfig(
 )
 
 class Fetcher:
-    def __init__(self,pair: str, exchange_name: Optional[str] = 'bybit', interval: str = '1s',limit: int = 30):
+    def __init__(self,pair: str, exchange_name: Optional[str] = 'bybit', interval: str = '1m',limit: int = 30):
         self.pair = pair
         self.exchange_name = exchange_name
         self.interval = interval

@@ -1152,7 +1152,7 @@ class BidAgentTrainer:
                         historical_df: pd.DataFrame,
                         pair: str,
                         exchange_name: str,
-                        interval: str = '1s',
+                        interval: str = '1m',
                         training_window: int = 100,
                         historical_interval: int = 0,  # For historical data
                         live_interval: int = 20,      # For live data
@@ -1264,7 +1264,7 @@ def main():
     
     try:
         trainer.continuous_training(
-            pair="BTC/USDC:USDC",
+            pair="BTC/USDT:USDT",
             exchange_name="bybit",
             interval="1m",
             training_window=100,
