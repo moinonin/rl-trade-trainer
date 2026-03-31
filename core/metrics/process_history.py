@@ -100,6 +100,26 @@ def process_trading_history(csv_path: str, starting_balance: float) -> dict:
         print("🎯 Extracting position states...")
         df['inferred_is_short'] = df['state'].apply(extract_last_is_short)
 
+        # Calculate trade durations based on position segments
+        print("⏱️ Calculating trade durations...")
+        # A new trade starts when the inferred_is_short changes
+        df['pos_changed'] = df['inferred_is_short'].diff().fillna(0) != 0
+        df['trade_id'] = df['pos_changed'].cumsum()
+        
+        trade_durations = df.groupby('trade_id').size()
+        avg_trade_duration = trade_durations.mean() if not trade_durations.empty else 0
+        max_trade_duration = trade_durations.max() if not trade_durations.empty else 0
+        
+        # Calculate separate durations for long and short
+        short_trade_ids = df[df['inferred_is_short'] == 1]['trade_id'].unique()
+        long_trade_ids = df[df['inferred_is_short'] == 0]['trade_id'].unique()
+        
+        short_durations = df[df['trade_id'].isin(short_trade_ids)].groupby('trade_id').size()
+        long_durations = df[df['trade_id'].isin(long_trade_ids)].groupby('trade_id').size()
+        
+        avg_short_duration = short_durations.mean() if not short_durations.empty else 0
+        avg_long_duration = long_durations.mean() if not long_durations.empty else 0
+
         # Create trades DataFrame with all state components
         trades_df = pd.DataFrame({
             'timestamp': df['timestamp'],
@@ -123,7 +143,14 @@ def process_trading_history(csv_path: str, starting_balance: float) -> dict:
         print("\n📊 Compiling final report...")
         report = {
             'rewards': rewards,
-            'total_trades': len(df),
+            'total_steps': len(df),
+            'total_trades': len(trade_durations),
+            'avg_trade_duration': avg_trade_duration,
+            'max_trade_duration': int(max_trade_duration),
+            'avg_short_duration': avg_short_duration,
+            'avg_long_duration': avg_long_duration,
+            'short_trades_count': len(short_durations),
+            'long_trades_count': len(long_durations),
             'action_distribution': action_distribution,
             'avg_reward': np.mean(rewards),
             'max_drawdown': calculate_max_drawdown(rewards),
@@ -150,15 +177,22 @@ def generate_performance_report(csv_path: str, starting_balance: float) -> dict:
         
         metrics_emoji = {
             'rewards': '💰',
+            'total_steps': '📏',
             'total_trades': '🔄',
+            'avg_trade_duration': '⏱️',
+            'max_trade_duration': '⏳',
+            'avg_short_duration': '📉',
+            'avg_long_duration': '📈',
+            'short_trades_count': '📉',
+            'long_trades_count': '📈',
             'history_source': '🧭',
             'action_distribution': '📊',
             'avg_reward': '📈',
             'max_drawdown': '📉',
             'cumulative_reward': '💎',
             'nmatrix_score': '🎯',
-            'short_trades': '📉',
-            'long_trades': '📈',
+            'short_steps': '📏',
+            'long_steps': '📏',
             'short_profit': '💹',
             'long_profit': '💹',
             'win_rate': '🎯',
@@ -176,9 +210,9 @@ def generate_performance_report(csv_path: str, starting_balance: float) -> dict:
         short_mask = df['is_short_val'] == 1
         long_mask = df['is_short_val'] == 0
         
-        # Trade counts
-        report['short_trades'] = short_mask.sum()
-        report['long_trades'] = long_mask.sum()
+        # Step counts
+        report['short_steps'] = short_mask.sum()
+        report['long_steps'] = long_mask.sum()
         
         # Profit calculations
         reward_col = 'avg_reward' if 'avg_reward' in df.columns else 'reward'
