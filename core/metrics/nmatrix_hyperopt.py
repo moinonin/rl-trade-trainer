@@ -65,8 +65,9 @@ def save_optimization_result(signed_alpha, result, metrics, base_path="user_data
     """
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    # Create directory structure
-    alpha_dir = os.path.join(base_path, f"alpha_{abs(signed_alpha):.4f}_{timestamp}")
+    # Create directory structure - use 'neg' or 'pos' for alpha to avoid confusion with abs()
+    alpha_sign = "neg" if signed_alpha < 0 else "pos"
+    alpha_dir = os.path.join(base_path, f"alpha_{alpha_sign}_{abs(signed_alpha):.4f}_{timestamp}")
     try:
         os.makedirs(alpha_dir, exist_ok=True)
     except Exception as e:
@@ -466,74 +467,8 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
 
         # Initialize a list to track discarded parameters and optimization progress
         discarded_params = []
-        optimization_progress = []
         iteration_counter = [0]  # Use list for mutable counter in closure
-        ''''
-        print(f"cofactors_norm: {cofactors_norm}, type: {type(cofactors_norm)}")
-        print(f"ideal_cofactors_norm: {ideal_cofactors_norm}, type: {type(ideal_cofactors_norm)}")
-        print(f"mse_cofactors: {mse_cofactors}")
 
-        def getParams(params, lambda_param=0.1):
-            try:
-                # Increment iteration counter
-                iteration_counter[0] += 1
-                current_iteration = iteration_counter[0]
-                
-                zeta, theta, sigma, alpha, gamma = params
-
-                # Calculate each contribution separately
-                cofactors_contribution = zeta * cofactors_norm_deviation
-                mse_cofactors_contribution = theta * mse_cofactors_deviation
-                signed_alpha_contribution = sigma * signed_alpha_deviation
-                entropy_contribution = alpha * entropy_deviation
-                #EAR_contribution = gamma * EAR_deviation
-                EAR_contribution = gamma * EAR_penalty
-
-                # Calculate the total objective score
-                objective_score = (
-                    cofactors_contribution +
-                    mse_cofactors_contribution +
-                    signed_alpha_contribution +
-                    entropy_contribution +
-                    EAR_contribution
-                )
-
-                # Apply L1 regularization
-                regularization_penalty = lambda_param * sum(abs(p) for p in params)
-                regularized_objective_score = objective_score + regularization_penalty
-
-                # Initialize nmatrix with a default value
-                nmatrix = 100  # Changed from -100 to 100 to indicate a bad initial state
-                if wins and not pd.isna(target_win_rate) and win_rate >= target_win_rate:
-                    nmatrix = regularized_objective_score
-                
-                # Track progress
-                progress_data = {
-                    'iteration': current_iteration,
-                    'params': params,
-                    'score': nmatrix,
-                    'contributions': {
-                        'cofactors': cofactors_contribution,
-                        'mse': mse_cofactors_contribution,
-                        'alpha': signed_alpha_contribution,
-                        'entropy': entropy_contribution,
-                        'EAR': EAR_contribution
-                    }
-                }
-                optimization_progress.append(progress_data)
-                
-                # Print progress at specified frequency with colors
-                if current_iteration % print_frequency == 0:
-                    score_color = GREEN if nmatrix < 0 else (YELLOW if nmatrix < 0.5 else RED)
-                    print(f"{CYAN}Iteration {current_iteration}:{END} Score = {score_color}{nmatrix:.6f}{END}, "
-                          f"Params = [{MAGENTA}{zeta:.4f}{END}, {MAGENTA}{theta:.4f}{END}, {MAGENTA}{sigma:.4f}{END}, {MAGENTA}{alpha:.4f}{END}, {MAGENTA}{gamma:.4f}{END}]")
-                
-                return nmatrix
-
-            except Exception as e:
-                print(f"{RED}Error in getParams: {e}{END}")
-                return 100  # Changed from -100 to 100 to indicate a bad result
-        '''
         def getParams(params, lambda_param=0.1):
             try:
                 # Increment iteration counter
@@ -551,7 +486,8 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
                 matrix = n_mat
 
                 # --- Fix: For alpha and EAR, we want them NEGATIVE ---
-                # If they're positive, that's bad and should be penalized heavily
+                # Positive weights (sigma, gamma) * negative metrics (alpha, EAR) 
+                # will lower the score, which is what we want to minimize.
                 if alpha_val > 0:
                     # Positive alpha is terrible - square it to penalize heavily
                     alpha_contrib = sigma * (alpha_val ** 2 * 1000)
@@ -642,12 +578,14 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
         space = [
             Real(0.0, 1.0, name='zeta'),
             Real(0.0, 1.0, name='theta'),
-            Real(-1.0, 0.0, name='sigma'),
+            Real(0.0, 1.0, name='sigma'),
             Real(0.0, 1.0, name='alpha'),
-            Real(-1.0, 0.0, name='gamma')
+            Real(0.0, 1.0, name='gamma')
         ]
 
         best_result = None
+        best_overall_metrics = None
+        optimization_progress = []
         intermediate_saves = []
         
         print(f"\n{BLUE}{'═' * 60}{END}")
@@ -655,6 +593,9 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
         print(f"{BLUE}{'═' * 60}{END}")
         
         for run_idx in range(5):
+            # Reset progress for each run to avoid bloated JSON files
+            optimization_progress = []
+            
             # Print run header with colors
             print(f"\n{BLUE}{'═' * 50}{END}")
             print(f"{BOLD}{CYAN}🔄 Run {run_idx+1}/5{END}")
@@ -672,17 +613,13 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
                 base_estimator="ET",            # keep if mixed/categorical space; else "GP"
                 acq_func="EI",
                 acq_optimizer="auto",           # adapts to space type
-                random_state=42,
+                random_state=42 + run_idx,      # Change seed for each run
                 n_jobs=-1,                      # parallel execution
                 verbose=False,
                 callback=lambda res: print(f"{YELLOW}Best score so far: {GREEN if res.fun < 0 else RED}{res.fun:.6f}{END}") if len(res.x_iters) % print_frequency == 0 else None
             )
             
-            if best_result is None or result.fun < best_result.fun:
-                best_result = result
-                print(f"{GREEN}✨ New best result found in run {run_idx+1}: {result.fun:.6f}{END}")
-
-            metrics = {
+            current_metrics = {
                 'win_rate': win_rate,
                 'kelly_risk': kelly_risk,
                 'burke': burke,
@@ -707,11 +644,16 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
                 'per_trade_loss': per_trade_loss,
                 'annual_down_volatility': annual_down_volatility,
                 'annual_up_volatility': annual_up_volatility,
-                'best_result': best_result,
+                'best_result': result,
                 'short_trades': short_trades_count,
                 'long_trades': long_trades_count,
                 'optimization_progress': optimization_progress
             }
+
+            if best_result is None or result.fun < best_result.fun:
+                best_result = result
+                best_overall_metrics = current_metrics
+                print(f"{GREEN}✨ New best result found in run {run_idx+1}: {result.fun:.6f}{END}")
 
             # Print summary of this run with colors
             alpha_color = GREEN if signed_alpha < 0 else RED
@@ -731,7 +673,7 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
             if save_intermediate and (run_idx+1) % intermediate_save_frequency == 0:
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 intermediate_dir = f"user_data/optimization_results/intermediate_run_{run_idx+1}_{timestamp}"
-                save_dir, json_path = save_optimization_result(signed_alpha, result, metrics, base_path=intermediate_dir)
+                save_dir, json_path = save_optimization_result(signed_alpha, result, current_metrics, base_path=intermediate_dir)
                 if save_dir:
                     intermediate_saves.append((save_dir, json_path))
                     print(f"{CYAN}💾 Saved intermediate results to:{END} {YELLOW}{save_dir}{END}")
@@ -745,12 +687,12 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
             best_burke = best_metrics.get('best_burke', helper.initial_burke)
             best_entropy = best_metrics.get('best_entropy', helper.initial_entropy)
 
-            if metrics:
+            if current_metrics:
                 # Always print current metrics summary with colors
                 # Determine colors and improvement indicators
                 alpha_improved = signed_alpha < best_alpha
-                current_burke = metrics.get('burke', -1)
-                current_entropy = metrics.get('entropy', 100)
+                current_burke = current_metrics.get('burke', -1)
+                current_entropy = current_metrics.get('entropy', 100)
                 burke_improved = current_burke > best_burke
                 entropy_improved = current_entropy < best_entropy
                 
@@ -776,7 +718,7 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
                     current_burke > best_burke and
                     current_entropy < best_entropy and
                     meets_gate_constraints):
-                    save_dir, json_path = save_optimization_result(signed_alpha, metrics["best_result"], metrics)
+                    save_dir, json_path = save_optimization_result(signed_alpha, result, current_metrics)
                     print(f"\n{BLUE}{'═' * 60}{END}")
                     print(f"{BOLD}{GREEN}🏆 BEST MODEL! All criteria met!{END}")
                     print(f"{GREEN}✓ Alpha: {signed_alpha:.6f} < {best_alpha:.6f}{END}")
@@ -793,9 +735,9 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
                     # Return with save_dir so the caller knows where to save the model
                     return {
                         'signed_alpha': signed_alpha,
-                        'optimization_result': metrics["best_result"],
-                        'metrics': metrics,
-                        'nmatrix_score': metrics["best_result"].fun if metrics["best_result"] else 0,
+                        'optimization_result': result,
+                        'metrics': current_metrics,
+                        'nmatrix_score': result.fun,
                         'save_dir': save_dir,
                         'json_path': json_path,
                         'intermediate_saves': intermediate_saves
@@ -806,7 +748,7 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
                       current_entropy < best_entropy) and meets_gate_constraints:
                     # Save as a candidate model
                     candidate_dir = f"user_data/optimization_results/candidate_alpha_{abs(signed_alpha):.4f}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-                    save_dir, json_path = save_optimization_result(signed_alpha, metrics["best_result"], metrics, base_path=candidate_dir)
+                    save_dir, json_path = save_optimization_result(signed_alpha, result, current_metrics, base_path=candidate_dir)
                     
                     print(f"\n{BLUE}{'═' * 60}{END}")
                     print(f"{BOLD}{YELLOW}⭐ CANDIDATE MODEL! Some criteria met:{END}")
@@ -850,15 +792,14 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
             print(f"{BOLD}Best score:{END} {GREEN if best_result.fun < 0 else RED}{best_result.fun:.6f}{END}")
             
             return {
-                'signed_alpha': signed_alpha,
+                'signed_alpha': best_overall_metrics.get('signed_alpha', signed_alpha),
                 'optimization_result': best_result,
-                'metrics': metrics,
+                'metrics': best_overall_metrics,
                 'nmatrix_score': best_result.fun,
                 'save_dir': None,  # No best model save
                 'json_path': None,  # No JSON path
                 'intermediate_saves': intermediate_saves
-            }
-            
+            }            
     except Exception as e:
         logging.error(f"{RED}Error in calculate_nmatrix calculations: {str(e)}{END}")
         traceback.print_exc()

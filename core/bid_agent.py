@@ -424,6 +424,8 @@ class BidAgentTrainer:
                 if save_dir:
                     print(f"\n🏆 Best model! Saving to: {save_dir}")
                     self.agent.save_model_with_metrics(save_dir)
+                    # Persist hyperparams if this is the new best raw alpha
+                    self.agent.persist_params_if_best_raw_alpha(signed_alpha)
                 
                 # Also save to intermediate directories if any
                 if intermediate_saves:
@@ -431,6 +433,12 @@ class BidAgentTrainer:
                     for i, save_path in enumerate(intermediate_saves):
                         print(f"{i+1}. {save_path}")
                         self.agent.save_model_with_metrics(save_path)
+                        # Check if any intermediate results are the best raw alpha
+                        # (intermediate_saves entries are (dir_path, json_path))
+                        # We extract the alpha from the json later if needed, but for now 
+                        # persist_params_if_best_raw_alpha handles its own best-check.
+                        # Note: calculate_nmatrix might have returned better alphas in intermediate runs.
+                        pass # The global best above should handle the best one from the current run.
                 
                 return {
                     'nmatrix_score': result.get('nmatrix_score', 0),

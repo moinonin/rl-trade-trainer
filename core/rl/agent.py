@@ -289,7 +289,7 @@ class BidsAgent:
             values: List[float] = []
             if isinstance(obj, dict):
                 for k, v in obj.items():
-                    if k == "_raw_alpha" and isinstance(v, (int, float)):
+                    if k in ("_raw_alpha", "alpha") and isinstance(v, (int, float)):
                         values.append(float(v))
                     values.extend(walk_raw_alpha(v))
             elif isinstance(obj, list):
@@ -297,6 +297,20 @@ class BidsAgent:
                     values.extend(walk_raw_alpha(item))
             return values
 
+        # Search recursively in user_data for all optimization results
+        base_search_dir = Path("user_data/optimization_results")
+        if base_search_dir.exists():
+            for fp in base_search_dir.rglob("optimization_results.json"):
+                try:
+                    with open(fp, "r") as f:
+                        data = json.load(f)
+                    values = walk_raw_alpha(data)
+                    if values:
+                        previous_best = min(previous_best, min(values))
+                except Exception:
+                    continue
+
+        # Also search in the local pkls directory
         for fp in pkls_dir.glob("optimization_results*.json"):
             try:
                 with open(fp, "r") as f:
@@ -304,10 +318,6 @@ class BidsAgent:
                 values = walk_raw_alpha(data)
                 if values:
                     previous_best = min(previous_best, min(values))
-                else:
-                    alpha_val = data.get("alpha")
-                    if isinstance(alpha_val, (int, float)):
-                        previous_best = min(previous_best, float(alpha_val))
             except Exception:
                 continue
 
