@@ -22,6 +22,7 @@ END = '\033[0m'
 @dataclass
 class BidsAgent:
     ACTIONS = ('go_long', 'go_short', 'do_nothing')  # Immutable action set
+    SPECIAL_RAW_ALPHA_THRESHOLD = -0.1
     
     def __init__(self, model_dir: Optional[str] = None):
         # Learning parameters
@@ -179,36 +180,62 @@ class BidsAgent:
     def save_model(self):
         """Persist model state safely"""
         try:
-            pkls_dir = self.model_dir/'pkls'
-            pkls_dir.mkdir(parents=True, exist_ok=True)
-            self._refresh_policy_table()
-
-            # Save read table plus Double-Q tables.
-            with open(pkls_dir/'q_table.pkl', 'wb') as f:
-                pickle.dump(self.q_table, f)
-            with open(pkls_dir/'q_table_a.pkl', 'wb') as f:
-                pickle.dump(self.q_table_a, f)
-            with open(pkls_dir/'q_table_b.pkl', 'wb') as f:
-                pickle.dump(self.q_table_b, f)
-            
-            # Save state mappings to pkls directory
-            with open(pkls_dir/'state_to_index.pkl', 'wb') as f:
-                pickle.dump(self.state_to_index, f)
-            # Save state episode transitions to pkls directory
-            with open(pkls_dir/'episode_transitions.pkl', 'wb') as f:
-                pickle.dump(self.episode_transitions, f)
+            pkls_dir = self.model_dir / 'pkls'
+            self._write_model_artifacts(pkls_dir)
             # Also save a backup in the model directory for backward compatibility
             with open(self.model_dir/'state_to_index.pkl', 'wb') as f:
                 pickle.dump(self.state_to_index, f)
-
-            # Persist active hyperparameters alongside the final model artifacts.
-            self._save_hyperparams_snapshot(pkls_dir)
             
             logging.info(f"{GREEN}Saved model with {len(self.state_to_index)} states{END}")
             
         except Exception as e:
             logging.error(f"{RED}Model save failed: {e}{END}")
             raise RuntimeError("Model persistence failed") from e
+
+    def _write_model_artifacts(self, pkls_dir: Path):
+        """Write model artifacts to a target pkls directory."""
+        pkls_dir.mkdir(parents=True, exist_ok=True)
+        self._refresh_policy_table()
+
+        with open(pkls_dir / 'q_table.pkl', 'wb') as f:
+            pickle.dump(self.q_table, f)
+        with open(pkls_dir / 'q_table_a.pkl', 'wb') as f:
+            pickle.dump(self.q_table_a, f)
+        with open(pkls_dir / 'q_table_b.pkl', 'wb') as f:
+            pickle.dump(self.q_table_b, f)
+        with open(pkls_dir / 'state_to_index.pkl', 'wb') as f:
+            pickle.dump(self.state_to_index, f)
+        with open(pkls_dir / 'episode_transitions.pkl', 'wb') as f:
+            pickle.dump(self.episode_transitions, f)
+
+        self._save_hyperparams_snapshot(pkls_dir)
+
+    def _copy_json_artifacts(self, source_dir: Path, target_dir: Path):
+        """Mirror JSON metadata files from a save directory into its pkls directory."""
+        if not source_dir.exists():
+            return
+
+        import shutil
+
+        target_dir.mkdir(parents=True, exist_ok=True)
+        for json_file in source_dir.glob("*.json"):
+            shutil.copy2(json_file, target_dir / json_file.name)
+
+    def export_model_artifacts(self, target_dir, metrics_json_path: Optional[Path] = None):
+        """Export model artifacts into a dedicated directory with a pkls subdir."""
+        export_dir = Path(target_dir)
+        pkls_dir = export_dir / 'pkls'
+        self._write_model_artifacts(pkls_dir)
+
+        self._copy_json_artifacts(export_dir, pkls_dir)
+
+        if metrics_json_path:
+            source_json_path = Path(metrics_json_path)
+            if source_json_path.exists() and source_json_path.parent != export_dir:
+                import shutil
+                shutil.copy2(source_json_path, pkls_dir / source_json_path.name)
+
+        logging.info(f"{GREEN}Exported model artifacts to {export_dir}{END}")
 
     def _current_hyperparams(self) -> Dict[str, float]:
         payload = dict(self.config)
@@ -432,59 +459,41 @@ class BidsAgent:
             
     def save_model_with_metrics(self, alpha_dir=None):
         """Save model when metrics condition is met"""
+        global_save_error = None
         try:
             # Save to regular location
             self.save_model()
-            
+        except Exception as e:
+            global_save_error = e
+            logging.error(f"{RED}Global model save failed; continuing artifact export: {e}{END}")
+
+        try:
             # If alpha_dir is provided, also save there
             if alpha_dir:
-                # Handle if alpha_dir is a tuple (dir_path, json_path)
                 if isinstance(alpha_dir, tuple) and len(alpha_dir) >= 1:
-                    alpha_dir = alpha_dir[0]  # Use the directory path from the tuple
-                
-                # Create alpha directory if it doesn't exist
-                alpha_path = Path(alpha_dir)
-                pkls_dir = alpha_path / 'pkls'
-                pkls_dir.mkdir(parents=True, exist_ok=True)
-                
-                # Save to alpha directory's pkls subdirectory
-                self._refresh_policy_table()
-                with open(pkls_dir/'q_table.pkl', 'wb') as f:
-                    pickle.dump(self.q_table, f)
-                with open(pkls_dir/'q_table_a.pkl', 'wb') as f:
-                    pickle.dump(self.q_table_a, f)
-                with open(pkls_dir/'q_table_b.pkl', 'wb') as f:
-                    pickle.dump(self.q_table_b, f)
-                
-                with open(pkls_dir/'state_to_index.pkl', 'wb') as f:
-                    pickle.dump(self.state_to_index, f)
-                
-                with open(pkls_dir/'episode_transitions.pkl', 'wb') as f:
-                    pickle.dump(self.episode_transitions, f)
+                    alpha_dir = alpha_dir[0]
 
-                # Mirror hyperparameters with each selected model directory.
-                self._save_hyperparams_snapshot(pkls_dir)
-                
-                # Copy optimization_results.json from alpha_dir to model's pkls directory if it exists
+                alpha_path = Path(alpha_dir)
                 source_json_path = alpha_path / 'optimization_results.json'
+                self.export_model_artifacts(
+                    alpha_path,
+                    metrics_json_path=source_json_path if source_json_path.exists() else None
+                )
+
                 if source_json_path.exists():
-                    # Create model's pkls directory if it doesn't exist
                     model_pkls_dir = self.model_dir / 'pkls'
-                    model_pkls_dir.mkdir(exist_ok=True)
-                    
-                    # Copy the JSON file to model's pkls directory
-                    target_json_path = model_pkls_dir / 'optimization_results.json'
                     try:
-                        import shutil
-                        shutil.copy2(source_json_path, target_json_path)
-                        logging.info(f"{CYAN}Copied metrics JSON to model's pkls directory: {target_json_path}{END}")
+                        self._copy_json_artifacts(alpha_path, model_pkls_dir)
+                        logging.info(f"{CYAN}Copied JSON metadata to model's pkls directory: {model_pkls_dir}{END}")
                     except Exception as json_copy_error:
-                        logging.error(f"{RED}Failed to copy metrics JSON: {json_copy_error}{END}")
-                
-                logging.info(f"{GREEN}Saved model to alpha directory: {alpha_dir}{END}")
-        
+                        logging.error(f"{RED}Failed to copy JSON metadata: {json_copy_error}{END}")
+
         except Exception as e:
             logging.error(f"{RED}Alpha model save failed: {e}{END}")
+            return
+
+        if global_save_error is None:
+            return
 
     def add_transition(self, state: Tuple, action: str, reward: float, next_state: Tuple):
         """Store a new transition"""

@@ -403,6 +403,7 @@ class BidAgentTrainer:
                 signed_alpha = result.get('signed_alpha', 0)
                 save_dir = result.get('save_dir')
                 intermediate_saves = result.get('intermediate_saves', [])
+                special_saves = result.get('special_saves', [])
                 
                 print(f"\n{'='*50}")
                 print(f"Hyperopt Results:")
@@ -419,13 +420,15 @@ class BidAgentTrainer:
                     print(f"Entropy: {metrics.get('entropy', 0):.6f}")
                     print(f"Kelly Risk: {metrics.get('kelly_risk', 0):.6f}")
                 
+                # Persist config for a new best raw alpha regardless of whether the
+                # run qualified as a best/candidate save.
+                self.agent.persist_params_if_best_raw_alpha(signed_alpha)
+
                 # If save_dir is returned, it means the metrics condition was met
-                # Save the model to the same directory
+                # Save the model to the same directory.
                 if save_dir:
                     print(f"\n🏆 Best model! Saving to: {save_dir}")
                     self.agent.save_model_with_metrics(save_dir)
-                    # Persist hyperparams if this is the new best raw alpha
-                    self.agent.persist_params_if_best_raw_alpha(signed_alpha)
                 
                 # Also save to intermediate directories if any
                 if intermediate_saves:
@@ -439,6 +442,12 @@ class BidAgentTrainer:
                         # persist_params_if_best_raw_alpha handles its own best-check.
                         # Note: calculate_nmatrix might have returned better alphas in intermediate runs.
                         pass # The global best above should handle the best one from the current run.
+
+                if special_saves:
+                    print(f"\nSpecial low-alpha saves: {len(special_saves)}")
+                    for i, save_path in enumerate(special_saves):
+                        print(f"special {i+1}. {save_path}")
+                        self.agent.save_model_with_metrics(save_path)
                 
                 return {
                     'nmatrix_score': result.get('nmatrix_score', 0),
@@ -448,7 +457,8 @@ class BidAgentTrainer:
                     'metrics': metrics,
                     'save_dir': save_dir,
                     'json_path': result.get('json_path'),
-                    'intermediate_saves': intermediate_saves
+                    'intermediate_saves': intermediate_saves,
+                    'special_saves': special_saves
                 }
                 
             except Exception as e:

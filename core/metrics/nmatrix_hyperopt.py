@@ -25,6 +25,7 @@ BOLD = '\033[1m'
 END = '\033[0m'
 
 INVALID_EAR_PENALTY = 1e10
+SPECIAL_RAW_ALPHA_THRESHOLD = -0.1
 
 def safe_ear(alpha, entropy):
     """Return a finite EAR value or None when the ratio is undefined."""
@@ -181,7 +182,8 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
         'nmatrix_score': 0,
         'save_dir': None,
         'json_path': None,
-        'intermediate_saves': []  # Track intermediate saves
+        'intermediate_saves': [],  # Track intermediate saves
+        'special_saves': []
     }
 
     if (len(trades) == 0) or (min_date is None) or (max_date is None) or (min_date == max_date):
@@ -189,6 +191,7 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
         return default_result
 
     try:
+        special_saves = []
         total_profit = trades['profit_abs'] / starting_balance
         days_period = max(1, (max_date - min_date).days)
 
@@ -713,6 +716,20 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
 
                 meets_gate_constraints = (win_rate >= 0.2 and signed_alpha < 0)
 
+                if signed_alpha <= SPECIAL_RAW_ALPHA_THRESHOLD:
+                    special_dir, special_json_path = save_optimization_result(
+                        signed_alpha,
+                        result,
+                        current_metrics,
+                        base_path="core/rl/special_pkls"
+                    )
+                    if special_dir:
+                        special_saves.append((special_dir, special_json_path))
+                        print(
+                            f"{MAGENTA}💾 Special low-alpha artifact queued: "
+                            f"{signed_alpha:.6f} <= {SPECIAL_RAW_ALPHA_THRESHOLD:.2f} -> {special_dir}{END}"
+                        )
+
                 # Check if this is a best model (meets all criteria + hard gates)
                 if (signed_alpha < best_alpha and
                     current_burke > best_burke and
@@ -740,7 +757,8 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
                         'nmatrix_score': result.fun,
                         'save_dir': save_dir,
                         'json_path': json_path,
-                        'intermediate_saves': intermediate_saves
+                        'intermediate_saves': intermediate_saves,
+                        'special_saves': special_saves
                     }
                 # Check if this is a candidate model (meets at least one criterion + hard gates)
                 elif (signed_alpha < best_alpha or
@@ -798,7 +816,8 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
                 'nmatrix_score': best_result.fun,
                 'save_dir': None,  # No best model save
                 'json_path': None,  # No JSON path
-                'intermediate_saves': intermediate_saves
+                'intermediate_saves': intermediate_saves,
+                'special_saves': special_saves
             }            
     except Exception as e:
         logging.error(f"{RED}Error in calculate_nmatrix calculations: {str(e)}{END}")

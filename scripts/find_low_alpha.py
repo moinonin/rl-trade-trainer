@@ -15,7 +15,7 @@ def find_alpha_blocks(data, current_path=""):
         # Check if this dict has a 'contributions' dict containing 'alpha'
         contributions = data.get('contributions')
         if isinstance(contributions, dict):
-            alpha = contributions.get('_raw_alpha')
+            alpha = contributions.get('_raw_EAR')
             if alpha is not None and isinstance(alpha, (int, float)):
                 yield current_path, alpha, data   # yield the block that holds contributions
 
