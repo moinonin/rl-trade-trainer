@@ -9,8 +9,8 @@ from defirl.rlhf_long import RLmodel_bids as bid
 import time
 #from defirl.rl import RLmodel_small as small # uses defirl==0.5.0
 
-from nlp.imit_main import imit_signal as imit
-from nlp.nlp_main import nlp_signal as nlp # nlp-project==0.1.1
+#from nlp.imit_main import imit_signal as imit
+#from nlp.nlp_main import nlp_signal as nlp # nlp-project==0.1.1
 from typing import Optional
 
 from core.exchange.exchange import init_exchange, API_KEY, API_SECRET
@@ -229,7 +229,7 @@ class Fetcher:
         except Exception as e:
             print(f"Error computing largesig: {e}")
             return None
-    '''
+
     # Compute nlp methods
     def compute_ml_input_signal(self):
         try:
@@ -286,7 +286,7 @@ class Fetcher:
         except Exception as e:
             logging.error(f"Error computing NLP action: {e}", exc_info=True)
             return {'error': str(e)}
-
+    '''
 def main(pair,exchange_name,method: str, *args,**kwargs):
     try:
         fetcher = Fetcher(pair,exchange_name)

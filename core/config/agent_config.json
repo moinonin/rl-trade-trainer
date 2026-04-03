@@ -21,8 +21,8 @@
     "log_path": "user_data/reports/convergence_monitor.csv"
   },
   "pretrained_signal_map": {
-    "long_bias_signal": "go_short",
-    "short_bias_signal": "go_long",
+    "long_bias_signal": "go_long",
+    "short_bias_signal": "go_short",
     "ambiguous_trade_position": "do_nothing",
     "default_is_short": 1
   }

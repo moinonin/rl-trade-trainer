@@ -7,6 +7,7 @@ proc:
 purge:
 	rm -rf user_data/optimization_results/*
 	rm core/rl/pkls/*
+	rm core/rl/*.pkl
 
 thresholds ?= 301
 base_dir ?= core/rl/pkls/ # user_data/optimization_results/ # 

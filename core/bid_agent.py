@@ -30,8 +30,8 @@ warnings.filterwarnings('ignore', category=UserWarning)
 if __package__ is None:
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from core.metrics.nmatrix_hyperopt import calculate_nmatrix, save_optimization_result
-from core.pretrained.rlbase import getBidsig, getNlpsig
+from core.metrics.nmatrix_hyperopt import calculate_nmatrix
+from core.pretrained.rlbase import getBidsig
 
 #from agents.exagent.train_param_opt import exec_optimization
 

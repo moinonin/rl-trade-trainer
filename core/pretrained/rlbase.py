@@ -1,9 +1,9 @@
 import os, sys
 import pickle
-from nlp.imit_main import imit_signal as imit
-from nlp.nlp_main import nlp_signal as nlp # nlp-project==0.0.9
-#from defirl.rlhf_rdql import RDQLmodel_bids as bid
+#from nlp.imit_main import imit_signal as imit
+#from nlp.nlp_main import nlp_signal as nlp # nlp-project==0.0.9
 from defirl.rlhf_rdql import RDQLmodel_bids as bid
+#from defirl.rlhf_rdql import RLmodel_bids as bid
 # Add the project root directory to Python path
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(current_dir)  # Only go up one level since we're already in 'bid'
@@ -311,7 +311,7 @@ def getBidsig(is_short: int, ml_candle: int, dataframe: pd.DataFrame = None):
     except Exception as e:
         logging.error(f"Error in getBidsig: {str(e)}")
         return None
-
+"""
 def getNlpsig(ml_candle: int, dataframe: pd.DataFrame = None):
     if len(dataframe) <= ml_candle:
         logging.warning(f"Not enough data (len={len(dataframe)}) for ml_candle={ml_candle}")
@@ -343,7 +343,7 @@ def getNlpsig(ml_candle: int, dataframe: pd.DataFrame = None):
         return None
 
 
-"""
+
 Example usage
 print(Fetcher('ADA/USDT:USDT', 'bybit').compute_nlp_action())
 print(sig_gen('ADA/USDT:USDT', 'bybit', method='nlp'))
