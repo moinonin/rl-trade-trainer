@@ -264,7 +264,7 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
                 # Use safer calculation method
                 exponent = periods_per_year / trades_per_year
                 base = 1 + cumulative_return
-                result = np.power(base, exponent, where=(base > 0)) - 1
+                result = np.power(base, exponent, where=(base > 0), out=None) - 1
                 return np.clip(result, -1e10, 1e10)
             except Exception:
                 return -1e10
