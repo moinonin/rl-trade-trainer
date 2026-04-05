@@ -1,11 +1,11 @@
 {
-  "learning_rate": 0.36027835034864486,
-  "discount_factor": 0.8365035231833666,
+  "learning_rate": 0.05,
+  "discount_factor": 0.95,
   "epsilon_start": 0.8898455001363847,
   "decay_rate": 0.9958969612472082,
   "min_epsilon": 0.05012494775682322,
-  "switching_cost": 0.05,
-  "hold_reward": -1e-05,
+  "switching_cost": 0.02,
+  "hold_reward": -0.0001,
   "state_rebalance": {
     "enabled": true,
     "mode": "reward_weighting",
@@ -26,5 +26,5 @@
     "ambiguous_trade_position": "do_nothing",
     "default_is_short": 1
   },
-  "updated_at": "2026-04-03T22:20:02.976988"
+  "updated_at": "2026-04-05T22:45:41.304929"
 }

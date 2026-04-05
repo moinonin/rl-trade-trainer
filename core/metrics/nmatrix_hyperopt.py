@@ -9,6 +9,7 @@ from skopt.space import Real
 import json
 import os
 import logging
+from pathlib import Path
 from .utils import HyperoptHelper
 
 # Set up logging
@@ -190,8 +191,28 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
         logging.warning("Invalid input parameters for calculate_nmatrix")
         return default_result
 
+    intermediate_saves = []
+    special_saves = []
+    best_result = None
+    best_overall_metrics = None
+    signed_alpha = 0
+
+    def persist_model_artifacts(save_dir, json_path):
+        """Persist model PKLs as soon as a JSON result directory is created."""
+        if not agent or not save_dir:
+            return
+
+        try:
+            agent.save_model_with_metrics((save_dir, json_path))
+            logging.info(
+                f"{CYAN}PKL artifacts exported to {Path(save_dir) / 'pkls'}{END}"
+            )
+        except Exception as save_error:
+            logging.error(
+                f"{RED}Immediate model artifact export failed for {save_dir}: {save_error}{END}"
+            )
+
     try:
-        special_saves = []
         total_profit = trades['profit_abs'] / starting_balance
         days_period = max(1, (max_date - min_date).days)
 
@@ -586,10 +607,7 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
             Real(0.0, 1.0, name='gamma')
         ]
 
-        best_result = None
-        best_overall_metrics = None
         optimization_progress = []
-        intermediate_saves = []
         
         print(f"\n{BLUE}{'═' * 60}{END}")
         print(f"{BOLD}{CYAN}🚀 Starting optimization with {len(trades)} trades{END}")
@@ -679,6 +697,7 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
                 save_dir, json_path = save_optimization_result(signed_alpha, result, current_metrics, base_path=intermediate_dir)
                 if save_dir:
                     intermediate_saves.append((save_dir, json_path))
+                    persist_model_artifacts(save_dir, json_path)
                     print(f"{CYAN}💾 Saved intermediate results to:{END} {YELLOW}{save_dir}{END}")
 
             save_dir = None
@@ -725,6 +744,7 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
                     )
                     if special_dir:
                         special_saves.append((special_dir, special_json_path))
+                        persist_model_artifacts(special_dir, special_json_path)
                         print(
                             f"{MAGENTA}💾 Special low-alpha artifact queued: "
                             f"{signed_alpha:.6f} <= {SPECIAL_RAW_ALPHA_THRESHOLD:.2f} -> {special_dir}{END}"
@@ -736,6 +756,8 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
                     current_entropy < best_entropy and
                     meets_gate_constraints):
                     save_dir, json_path = save_optimization_result(signed_alpha, result, current_metrics)
+                    if save_dir:
+                        persist_model_artifacts(save_dir, json_path)
                     print(f"\n{BLUE}{'═' * 60}{END}")
                     print(f"{BOLD}{GREEN}🏆 BEST MODEL! All criteria met!{END}")
                     print(f"{GREEN}✓ Alpha: {signed_alpha:.6f} < {best_alpha:.6f}{END}")
@@ -791,6 +813,7 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
                     
                     if save_dir:
                         intermediate_saves.append((save_dir, json_path))
+                        persist_model_artifacts(save_dir, json_path)
                 else:
                     if not meets_gate_constraints:
                         print(
@@ -822,4 +845,12 @@ def calculate_nmatrix(trades: pd.DataFrame, min_date: datetime, max_date: dateti
     except Exception as e:
         logging.error(f"{RED}Error in calculate_nmatrix calculations: {str(e)}{END}")
         traceback.print_exc()
-        return default_result
+        failure_result = dict(default_result)
+        failure_result.update({
+            'signed_alpha': signed_alpha,
+            'optimization_result': best_result,
+            'metrics': best_overall_metrics or default_result['metrics'],
+            'intermediate_saves': intermediate_saves,
+            'special_saves': special_saves
+        })
+        return failure_result

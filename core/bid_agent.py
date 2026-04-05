@@ -424,30 +424,18 @@ class BidAgentTrainer:
                 # run qualified as a best/candidate save.
                 self.agent.persist_params_if_best_raw_alpha(signed_alpha)
 
-                # If save_dir is returned, it means the metrics condition was met
-                # Save the model to the same directory.
                 if save_dir:
-                    print(f"\n🏆 Best model! Saving to: {save_dir}")
-                    self.agent.save_model_with_metrics(save_dir)
+                    print(f"\n🏆 Best model artifacts saved to: {save_dir}")
                 
-                # Also save to intermediate directories if any
                 if intermediate_saves:
                     print(f"\nIntermediate saves: {len(intermediate_saves)}")
                     for i, save_path in enumerate(intermediate_saves):
                         print(f"{i+1}. {save_path}")
-                        self.agent.save_model_with_metrics(save_path)
-                        # Check if any intermediate results are the best raw alpha
-                        # (intermediate_saves entries are (dir_path, json_path))
-                        # We extract the alpha from the json later if needed, but for now 
-                        # persist_params_if_best_raw_alpha handles its own best-check.
-                        # Note: calculate_nmatrix might have returned better alphas in intermediate runs.
-                        pass # The global best above should handle the best one from the current run.
 
                 if special_saves:
                     print(f"\nSpecial low-alpha saves: {len(special_saves)}")
                     for i, save_path in enumerate(special_saves):
                         print(f"special {i+1}. {save_path}")
-                        self.agent.save_model_with_metrics(save_path)
                 
                 return {
                     'nmatrix_score': result.get('nmatrix_score', 0),
@@ -727,7 +715,6 @@ class BidAgentTrainer:
                     # No need to call print_fancy_results as run_hyperopt now prints detailed results
                     # Just print a summary of saved models
                     save_dir = hyperopt_results.get('save_dir')
-                    json_path = hyperopt_results.get('json_path')
                     intermediate_saves = hyperopt_results.get('intermediate_saves', [])
                     
                     if save_dir or intermediate_saves:
@@ -736,17 +723,6 @@ class BidAgentTrainer:
                         print(f"{'='*50}")
                         if save_dir:
                             print(f"Best model saved to: {save_dir}")
-                            # Copy the JSON file to the model's pkls directory if it exists
-                            if json_path and os.path.exists(json_path):
-                                model_pkls_dir = self.agent.model_dir / 'pkls'
-                                model_pkls_dir.mkdir(exist_ok=True)
-                                target_json_path = model_pkls_dir / 'optimization_results.json'
-                                try:
-                                    import shutil
-                                    shutil.copy2(json_path, target_json_path)
-                                    print(f"Copied metrics JSON to model's pkls directory: {target_json_path}")
-                                except Exception as json_copy_error:
-                                    print(f"Failed to copy metrics JSON: {json_copy_error}")
                         print(f"Intermediate models saved: {len(intermediate_saves)}")
                 
                 # Generate and store episode report
@@ -1102,7 +1078,6 @@ class BidAgentTrainer:
                 # No need to call print_fancy_results as run_hyperopt now prints detailed results
                 # Just print a summary of saved models
                 save_dir = hyperopt_results.get('save_dir')
-                json_path = hyperopt_results.get('json_path')
                 intermediate_saves = hyperopt_results.get('intermediate_saves', [])
                 
                 if save_dir or intermediate_saves:
@@ -1111,17 +1086,6 @@ class BidAgentTrainer:
                     print(f"{'='*50}")
                     if save_dir:
                         print(f"Best model saved to: {save_dir}")
-                        # Copy the JSON file to the model's pkls directory if it exists
-                        if json_path and os.path.exists(json_path):
-                            model_pkls_dir = self.agent.model_dir / 'pkls'
-                            model_pkls_dir.mkdir(exist_ok=True)
-                            target_json_path = model_pkls_dir / 'optimization_results.json'
-                            try:
-                                import shutil
-                                shutil.copy2(json_path, target_json_path)
-                                print(f"Copied metrics JSON to model's pkls directory: {target_json_path}")
-                            except Exception as json_copy_error:
-                                print(f"Failed to copy metrics JSON: {json_copy_error}")
                     print(f"Intermediate models saved: {len(intermediate_saves)}")
             
             # Update position and continue processing...
